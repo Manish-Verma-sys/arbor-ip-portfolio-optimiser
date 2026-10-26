@@ -316,7 +316,14 @@ def _call(prompt: str, tools: list, max_tokens: int = 3000) -> tuple[dict, list[
     urls: list[str] = []
     text_parts: list[str] = []
     for _ in range(6):  # pause_turn continuations
-        kwargs = dict(model=model_name(), max_tokens=max_tokens, system=SYSTEM, messages=messages)
+        current_model = model_name()
+        kwargs = dict(model=current_model, max_tokens=max_tokens, system=SYSTEM, messages=messages)
+        # Sonnet 5.5 supports adaptive thinking; pair it with high effort for
+        # evidence-heavy patent ratings. Leave other configured model IDs alone
+        # rather than sending model-specific parameters they may reject.
+        if "claude-sonnet-5-5" in current_model.lower():
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": "high"}
         if tools:
             kwargs["tools"] = tools
         resp = client.messages.create(**kwargs)
@@ -391,7 +398,7 @@ def build_dim_prompt(dim: str, num: str, f: dict, today: date) -> str:
 
 def rate_dimension(dim: str, num: str, facts: dict, today: date) -> tuple[dict, dict]:
     try:
-        data, urls, usage = _call(build_dim_prompt(dim, num, facts, today), DIM_PROMPTS[dim]["tools"], 2000)
+        data, urls, usage = _call(build_dim_prompt(dim, num, facts, today), DIM_PROMPTS[dim]["tools"], 6144)
         r = data.get("rating")
         r = None if r is None else max(0, min(5, int(round(float(r)))))
         conf = data.get("confidence")
@@ -409,7 +416,7 @@ def rate_dimension(dim: str, num: str, facts: dict, today: date) -> tuple[dict, 
                   "rating if the facts support one; explain uncertainty and keep confidence "
                   "low. Do not invent owner-specific commercial, strategic or licensing facts. "
                   "If evidence is genuinely insufficient, return null.")
-            data, urls, usage = _call(fallback_prompt, [], 1200)
+            data, urls, usage = _call(fallback_prompt, [], 4096)
             raw = data.get("rating")
             rating = None if raw is None else max(0, min(5, int(round(float(raw)))))
             return {"rating": rating, "rationale": str(data.get("rationale") or "")[:600],
