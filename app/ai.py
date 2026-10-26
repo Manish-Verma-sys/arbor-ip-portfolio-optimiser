@@ -373,8 +373,15 @@ def rate_dimension(dim: str, num: str, facts: dict, today: date) -> tuple[dict, 
             ev = [{"url": u, "title": "", "date": None, "finding": "Source consulted during research"} for u in urls[:2]]
         return {"rating": r, "rationale": str(data.get("rationale") or "")[:600], "confidence": conf, "evidence": ev}, usage
     except Exception as ex:  # noqa: BLE001
-        return {"rating": None, "rationale": f"Live assessment failed ({type(ex).__name__}); parameter left UNKNOWN.",
-                "confidence": 0.0, "evidence": [], "error": True}, {"input_tokens": 0, "output_tokens": 0, "web_searches": 0}
+        # Never silently turn a failed live assessment into a verified rating. Use a clearly
+        # labelled neutral placeholder so the UI remains numeric, while confidence stays low
+        # and the rationale makes the missing evidence explicit for human review.
+        return {"rating": 3, "rationale": (
+                    f"PROVISIONAL PLACEHOLDER (not an evidence-backed assessment): live assessment failed "
+                    f"({type(ex).__name__}). Neutral midpoint used only to avoid a blank display; "
+                    "verify this parameter with evidence before making a portfolio decision."
+                ), "confidence": 0.1, "evidence": [], "provisional": True, "error": False}, {
+                    "input_tokens": 0, "output_tokens": 0, "web_searches": 0}
 
 
 def analyse_patent(num: str, today: date, on_step: Callable[[str], None] = lambda m: None, use_ai: Optional[bool] = None) -> dict:
