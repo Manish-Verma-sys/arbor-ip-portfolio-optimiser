@@ -123,6 +123,8 @@ def test_key_cleaning_and_info(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", " sk-ant-oat01-" + "x" * 90 + " ")
     info = ai.key_info()
     assert info["had_extra_whitespace_or_quotes"] and "OAuth" in info["type"] and "x" * 20 not in str(info)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "abc123")
+    assert "too short" in ai.key_info()["type"]
 
 
 def _run_job(c, numbers):

@@ -48,11 +48,10 @@ def key_info() -> dict:
     if not raw:
         return {"present": False}
     k = clean_key(raw)
-    kind = ("standard API key" if k.startswith("sk-ant-api") else
-            "Admin key (cannot call the Messages API)" if k.startswith("sk-ant-admin") else
+    kind = ("Admin key (cannot call the Messages API)" if k.startswith("sk-ant-admin") else
             "OAuth / subscription token (not an API key)" if k.startswith("sk-ant-oat") else
-            "unrecognised format (expected to start with sk-ant-api)")
-    return {"present": True, "type": kind, "looks_valid": k.startswith("sk-ant-api") and len(k) > 80, "length": len(k),
+            "API key" if len(k) >= 80 else "too short to be an API key (check it was copied in full)")
+    return {"present": True, "type": kind, "looks_valid": len(k) >= 80 and not k.startswith(("sk-ant-admin", "sk-ant-oat")), "length": len(k),
             "had_extra_whitespace_or_quotes": raw != k}
 
 
@@ -71,6 +70,8 @@ def test_key() -> dict:
                 404: f"Model '{model_name()}' was not found for this key (404). Set ANTHROPIC_MODEL to a model your account can use.",
                 429: "Rate limited (429) - wait a minute and retry.",
                 400: "Request rejected (400) - often means the account has no credit balance."}.get(code, "")
+        if code == 400 and "credit balance" in str(ex).lower():
+            hint = "The key is valid, but the Anthropic account has no credit. Add credits at console.anthropic.com > Plans & Billing."
         return {"ok": False, "status_code": code, "error_type": type(ex).__name__, "error": str(ex)[:300], "hint": hint}
 
 
