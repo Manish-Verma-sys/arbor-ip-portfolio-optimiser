@@ -126,7 +126,7 @@ const LEGAL = { active: ["Active", "ls-active"], pending: ["Pending", "ls-pendin
   abandoned: ["Abandoned", "ls-dead"], withdrawn: ["Withdrawn", "ls-dead"], unknown: ["Unknown", "ls-dead"] };
 const legalCell = (r) => { const [l, c] = LEGAL[r.status] || [r.status, "ls-dead"];
   return `<span class="ls ${c}">${esc(l)}</span>${r.status_detail && r.status_detail.toLowerCase() !== l.toLowerCase() ? `<div class="xsmall muted">${esc(r.status_detail)}</div>` : r.status === "lapsed" ? '<div class="xsmall muted">fee not paid</div>' : r.status === "expired" ? '<div class="xsmall muted">end of term</div>' : ""}${r.expiry_estimate && ["active", "pending"].includes(r.status) ? `<div class="xsmall muted">expires ${fmtDate(r.expiry_estimate)}</div>` : ""}`; };
-const ratingChip = (v) => (v === null || v === undefined ? '<span class="rt rt-u" title="UNKNOWN — not enough evidence">?</span>' : `<span class="rt rt-${v}" title="${v} of 5">${v}</span>`);
+const ratingChip = (v, detail = {}) => { const why = (detail.rationale || (v === null || v === undefined ? "No evidence-backed rating is available yet." : "No detailed rationale was returned for this rating.")); const basis = detail.basis ? ` Basis: ${detail.basis}.` : ""; const conf = Number.isFinite(Number(detail.confidence)) ? ` Confidence: ${Math.round(Number(detail.confidence) * 100)}%.` : ""; const ev = detail.evidence_count ? ` Evidence items: ${detail.evidence_count}.` : ""; const title = `${v === null || v === undefined ? "UNKNOWN" : `Rating ${v}/5`}. ${why}${basis}${conf}${ev} Hover for rationale; use evidence and analyst review before decisions.`; return v === null || v === undefined ? `<span class="rt rt-u" title="${esc(title)}" tabindex="0" aria-label="${esc(title)}">?</span>` : `<span class="rt rt-${v}" title="${esc(title)}" tabindex="0" aria-label="${esc(title)}">${v}</span>`; };
 const gatePill = (g) => `<span class="badge gate gate-${esc(g)}">${esc(g)}</span>`;
 const statusTxt = (s) => `<span class="status status-${esc(s)}">${esc(s)}</span>`;
 const modeBadge = (m) => (m === "synthetic" ? '<span class="badge b-syn" title="Fictional demonstration data">SYNTHETIC DEMO DATA</span>'
@@ -712,7 +712,7 @@ async function tabAssets(p, runId) {
         <td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.title)}</a></td>
         <td class="nowrap">${legalCell(r)}</td>
         <td>${r.strategic_score === null ? '<span class="unknown">n/a</span>' : `<div class="scorecell"><b>${r.strategic_score.toFixed(0)}</b><div class="bar" style="width:48px"><i style="width:${r.strategic_score}%"></i></div></div>`}</td>
-        ${dims.map((d) => `<td class="center">${ratingChip(r.ratings?.[d.key])}</td>`).join("")}
+        ${dims.map((d) => `<td class="center">${ratingChip(r.ratings?.[d.key], r.dimension_details?.[d.key] || {})}</td>`).join("")}
         <td>${recCell(r)}</td><td>${gatePill(r.gate_status)}</td>
         <td class="num">${fmtMoney(r.invested_est)}</td>
         <td class="num">${fmtMoney(r.maintenance_paid)}</td>
