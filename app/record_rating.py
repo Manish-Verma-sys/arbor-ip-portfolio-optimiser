@@ -183,13 +183,11 @@ def competitive(s: dict) -> dict:
 
 
 def commercial(s: dict) -> dict:
+    # Rubric: 4+ needs element-level matches to a current product, which the record alone cannot show.
+    # Fee payments are an owner-investment signal and are scored under Strategic, not here.
     r = 2
-    paid_recent = s["last_fee"] and (s["grant"] and s["last_fee"] >= s["grant"]) and (s["fee_years"] and max(s["fee_years"]) >= 8)
-    if s["status"] == "active" and s["fee_years"]:
-        r += 1
-    if len(s["countries"]) >= 3 or s["n_third"] >= 4:
-        r += 1
-    r = min(r, 3) if not paid_recent else min(r, 4)
+    if s["n_third"] >= 3 or len(s["countries"]) >= 2:
+        r = 3  # plausible product-line relevance: others build in the space, or the owner files where it sells
     if s["status"] in ("expired", "lapsed", "abandoned"):
         r = 1
     return _pack(r, 0.4,
@@ -200,7 +198,7 @@ def commercial(s: dict) -> dict:
                   f"Foreign family in {', '.join(COUNTRY.get(c, c) for c in s['countries'])} — owners file abroad where they expect to sell products." if s["countries"] else "No foreign family members — protection is US-only.",
                   f"Companies building in this space cite it: {_names(s['third'], 3)}." if s["third"] else ""],
                  "No public product, datasheet or virtual-marking page has been matched to claim 1 (requires AI web research or your product mapping).",
-                 "Fee payments and filing breadth show the owner treats it as commercially relevant." if r >= 3 else "Technology area is commercially active.",
+                 "Other companies build in the claimed space and/or the owner files abroad, so a product-line match is plausible." if r >= 3 else "The patent is in force in an area with some commercial activity.",
                  "Owner behaviour is indirect evidence; the owner may keep patents for defensive reasons only.",
                  f"Search {s['owner']} product pages and virtual-marking lists for the claim-1 feature, or add a product mapping.", s)
 
@@ -237,15 +235,17 @@ def portfolio(s: dict) -> dict:
         r += 1
     if s["continuation_of"]:
         r -= 1
+    if not (s["foreign"] or s["continuations"] or s["self_cites"] or s["continuation_of"]):
+        r = 2  # isolated US-only filing with no follow-on work: little incremental portfolio protection
     r = min(r, 5)
     return _pack(r, 0.45,
-                 f"{'Foundational' if s['self_cites'] >= 2 else 'Distinct'} asset in {s['owner']}'s portfolio" + (f", anchoring a {len(s['foreign']) + 1}-country family." if s["foreign"] else "."),
+                 f"{'Foundational' if s['self_cites'] >= 2 else 'Distinct' if r >= 3 else 'Isolated, US-only'} asset in {s['owner']}'s portfolio" + (f", anchoring a {len(s['foreign']) + 1}-country family." if s["foreign"] else "."),
                  f"Covers the specific approach in claim 1 rather than the broad field ({s['cpc']}); later owner filings build on it rather than duplicate it." if s["self_cites"] else f"Covers the specific approach in claim 1 within {s['cpc']}.",
                  [f"{s['self_cites']} later {s['owner']} filing(s) cite it as prior art." if s["self_cites"] else "No later owner filings citing it were found in the record.",
                   f"US parent of foreign family members: {', '.join(s['foreign'][:5])}." if s["foreign"] else "",
                   f"It is itself a continuation of {s['continuation_of']} — some subject matter is shared with the parent." if s["continuation_of"] else "Original filing (not a continuation)."],
                  "Overlap with the owner's other live patents in the same subgroup has not been searched.",
-                 "No evidence of duplication by another live owner patent.",
+                 "No evidence of duplication by another live owner patent." if r >= 3 else "It is the only US protection for this claim-1 combination that the record shows.",
                  "A full assignee search may reveal closely related patents that reduce its incremental value.",
                  f"Run a Google Patents search: assignee:“{s['owner']}” CPC {s['cpc'].split('/')[0]} and compare claim 1s.", s)
 
