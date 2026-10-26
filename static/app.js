@@ -126,7 +126,55 @@ const LEGAL = { active: ["Active", "ls-active"], pending: ["Pending", "ls-pendin
   abandoned: ["Abandoned", "ls-dead"], withdrawn: ["Withdrawn", "ls-dead"], unknown: ["Unknown", "ls-dead"] };
 const legalCell = (r) => { const [l, c] = LEGAL[r.status] || [r.status, "ls-dead"];
   return `<span class="ls ${c}">${esc(l)}</span>${r.status_detail && r.status_detail.toLowerCase() !== l.toLowerCase() ? `<div class="xsmall muted">${esc(r.status_detail)}</div>` : r.status === "lapsed" ? '<div class="xsmall muted">fee not paid</div>' : r.status === "expired" ? '<div class="xsmall muted">end of term</div>' : ""}${r.expiry_estimate && ["active", "pending"].includes(r.status) ? `<div class="xsmall muted">expires ${fmtDate(r.expiry_estimate)}</div>` : ""}`; };
-const ratingChip = (v, detail = {}) => { const why = (detail.rationale || (v === null || v === undefined ? "No evidence-backed rating is available yet." : "No detailed rationale was returned for this rating.")); const basis = detail.basis ? ` Basis: ${detail.basis}.` : ""; const conf = Number.isFinite(Number(detail.confidence)) ? ` Confidence: ${Math.round(Number(detail.confidence) * 100)}%.` : ""; const ev = detail.evidence_count ? ` Evidence items: ${detail.evidence_count}.` : ""; const title = `${v === null || v === undefined ? "UNKNOWN" : `Rating ${v}/5`}. ${why}${basis}${conf}${ev} Hover for rationale; use evidence and analyst review before decisions.`; return v === null || v === undefined ? `<span class="rt rt-u" title="${esc(title)}" tabindex="0" aria-label="${esc(title)}">?</span>` : `<span class="rt rt-${v}" title="${esc(title)}" tabindex="0" aria-label="${esc(title)}">${v}</span>`; };
+const BASIS_LABEL = { ai: "AI research (web-verified)", record: "Record estimate (from the patent record)", analyst: "Analyst input", derived: "Derived from data", customer: "Your business inputs", public: "Public evidence" };
+const ratingChip = (v, detail = {}, dimKey = "") => {
+  const unknown = v === null || v === undefined;
+  const payload = encodeURIComponent(JSON.stringify({ v, dim: dimKey, basis: detail.basis, conf: detail.confidence, d: detail.detail || null, r: detail.rationale || "" }));
+  const est = !unknown && detail.basis === "record" ? " rt-est" : "";
+  return `<span class="rt ${unknown ? "rt-u" : "rt-" + v}${est}" data-rh="${payload}" tabindex="0" aria-label="${esc((unknown ? "Unknown" : `Rating ${v} of 5`) + ". " + (detail.detail?.headline || detail.rationale || "").slice(0, 200))}">${unknown ? "?" : v}</span>`;
+};
+function rhHtml(o) {
+  const dlabel = (S.meta?.dimensions.find((x) => x.key === o.dim) || {}).label || o.dim;
+  const d = o.d;
+  const conf = Number.isFinite(Number(o.conf)) ? Math.round(Number(o.conf) * 100) : null;
+  const head = `<div class="rh-top"><span class="rt ${o.v === null || o.v === undefined ? "rt-u" : "rt-" + o.v}">${o.v ?? "?"}</span><div><b>${esc(dlabel)}</b><div class="rh-basis">${esc(BASIS_LABEL[o.basis] || o.basis || "")}${conf !== null ? ` · confidence ${conf}%` : ""}</div></div></div>`;
+  if (!d) return head + `<p>${esc(o.r || "No explanation available.")}</p>`;
+  const sec = (t, x) => (x ? `<div class="rh-sec"><span>${t}</span>${esc(x)}</div>` : "");
+  return head + `<p class="rh-head">${esc(d.headline || "")}</p>` + sec("Technical basis", d.technical_basis)
+    + ((d.evidence_points || []).length ? `<div class="rh-sec"><span>Evidence</span><ul>${d.evidence_points.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></div>` : "")
+    + `<div class="rh-two">${sec("Why not higher", d.why_not_higher)}${sec("Why not lower", d.why_not_lower)}</div>`
+    + sec("Risks", d.risks) + sec("Next step", d.next_step)
+    + `<div class="rh-foot">Open the patent for sources · click to pin</div>`;
+}
+function initRatingHover() {
+  const box = document.createElement("div");
+  box.id = "rhbox"; box.setAttribute("role", "tooltip"); box.hidden = true;
+  document.body.appendChild(box);
+  let pinned = null, hideT = null;
+  const show = (el) => {
+    clearTimeout(hideT);
+    let o; try { o = JSON.parse(decodeURIComponent(el.dataset.rh)); } catch { return; }
+    box.innerHTML = rhHtml(o); box.hidden = false;
+    const r = el.getBoundingClientRect(), bw = Math.min(460, window.innerWidth - 24);
+    box.style.width = bw + "px";
+    const left = Math.min(Math.max(12, r.left + r.width / 2 - bw / 2), window.innerWidth - bw - 12);
+    const below = r.bottom + 10 + box.offsetHeight < window.innerHeight;
+    box.style.left = left + window.scrollX + "px";
+    box.style.top = (below ? r.bottom + 10 : Math.max(8, r.top - box.offsetHeight - 10)) + window.scrollY + "px";
+  };
+  const hide = () => { if (!pinned) hideT = setTimeout(() => (box.hidden = true), 120); };
+  document.addEventListener("mouseover", (e) => { const el = e.target.closest(".rt[data-rh]"); if (el && !pinned) show(el); if (e.target.closest("#rhbox")) clearTimeout(hideT); });
+  document.addEventListener("mouseout", (e) => { if (e.target.closest(".rt[data-rh]") || e.target.closest("#rhbox")) hide(); });
+  document.addEventListener("focusin", (e) => { const el = e.target.closest(".rt[data-rh]"); if (el) show(el); });
+  document.addEventListener("focusout", (e) => { if (e.target.closest(".rt[data-rh]")) { pinned = null; hide(); } });
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest(".rt[data-rh]");
+    if (el) { pinned = pinned === el ? null : el; if (pinned) show(el); return; }
+    if (pinned && !e.target.closest("#rhbox")) { pinned = null; box.hidden = true; }
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { pinned = null; box.hidden = true; } });
+  window.addEventListener("hashchange", () => { pinned = null; box.hidden = true; });
+}
 const gatePill = (g) => `<span class="badge gate gate-${esc(g)}">${esc(g)}</span>`;
 const statusTxt = (s) => `<span class="status status-${esc(s)}">${esc(s)}</span>`;
 const modeBadge = (m) => (m === "synthetic" ? '<span class="badge b-syn" title="Fictional demonstration data">SYNTHETIC DEMO DATA</span>'
@@ -257,6 +305,7 @@ window.addEventListener("hashchange", () => { router(); window.scrollTo(0, 0); }
 async function boot() {
   $("#navToggle").addEventListener("click", (e) => { const n = $("#nav"); n.classList.toggle("open"); e.currentTarget.setAttribute("aria-expanded", n.classList.contains("open")); });
   initTips();
+  initRatingHover();
   const meta = await api("/v1/meta");
   S.meta = meta;
   $("#disclaimer").textContent = meta.disclaimer;
@@ -700,19 +749,18 @@ async function tabAssets(p, runId) {
     const pageItems = items.slice((f.page - 1) * ps, f.page * ps);
     const th = (k, l, cls = "", tk = null) => `<th class="${cls}"><span class="thw"><button data-sort="${k}">${l} ${f.sort === k ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button>${tk ? tip(tk) : ""}</span></th>`;
     $("#tbl").innerHTML = items.length ? `<div class="table-wrap"><table class="t assets-t"><thead>
-      <tr><th colspan="4"></th><th colspan="${dims.length}" class="grp">Parameter ratings (0–5) ${tip("rating")}</th><th colspan="2"></th><th colspan="3" class="grp grp-cost">Cost to date &amp; to go (USD) ${tip("money")}</th><th colspan="3" class="grp grp-fee">Maintenance fee status ${tip("feestatus")}</th><th colspan="2"></th></tr>
-      <tr>${th("publication_number", "Publication no.", "stick", null)}${th("title", "Title", "", "asset")}${th("status", "Legal status", "", "legalstatus")}${th("strategic_score", "Score", "", "score")}
-      ${dims.map((d) => `<th class="dimh"><span class="thw"><button data-sort="dim:${d.key}">${esc(DIM_SHORT[d.key])} ${f.sort === "dim:" + d.key ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button>${tip(d.key, d.label + ": " + DIM_HELP[d.key])}</span></th>`).join("")}
-      ${th("recommendation", "Outcome", "", "outcome")}<th><span class="thw">Checks ${tip("checks")}</span></th>
-      ${th("invested_est", "Est. invested to date", "num", "invested")}${th("maintenance_paid", "Fees paid", "num", "feespaid")}${th("remaining_dues", "Remaining dues to expiry", "num", "remaining")}
-      <th class="center">3.5-yr ${tip("fee35")}</th><th class="center">7.5-yr ${tip("fee75")}</th><th class="center">11.5-yr ${tip("fee115")}</th>
-      ${th("next_deadline", "Next fee due", "", "deadline")}${th("data_coverage", "Coverage", "num", "coverage")}</tr></thead>
+      <tr>${th("publication_number", "Publication no.", "stick", null)}${th("title", "Title", "", null)}${th("status", "Legal status", "", null)}${th("strategic_score", "Score", "", null)}
+      ${dims.map((d) => `<th class="dimh" title="${esc(d.label)}"><span class="thw"><button data-sort="dim:${d.key}">${esc(DIM_SHORT[d.key])} ${f.sort === "dim:" + d.key ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button></span></th>`).join("")}
+      ${th("recommendation", "Outcome", "", null)}<th>Checks</th>
+      ${th("invested_est", "Invested to date ($)", "num", null)}${th("maintenance_paid", "Fees paid ($)", "num", null)}${th("remaining_dues", "Remaining dues ($)", "num", null)}
+      <th class="center">3.5-yr fee</th><th class="center">7.5-yr fee</th><th class="center">11.5-yr fee</th>
+      ${th("next_deadline", "Next fee due", "", null)}${th("data_coverage", "Coverage", "num", null)}</tr></thead>
       <tbody>${pageItems.map((r) => `<tr data-id="${esc(r.patent_asset_id)}">
         <td class="nowrap stick"><a class="pub" href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.publication_number)}</a>${r.relationship_type !== "original" ? `<div class="xsmall muted">${esc(r.relationship_type)}</div>` : ""}</td>
         <td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.title)}</a></td>
         <td class="nowrap">${legalCell(r)}</td>
         <td>${r.strategic_score === null ? '<span class="unknown">n/a</span>' : `<div class="scorecell"><b>${r.strategic_score.toFixed(0)}</b><div class="bar" style="width:48px"><i style="width:${r.strategic_score}%"></i></div></div>`}</td>
-        ${dims.map((d) => `<td class="center">${ratingChip(r.ratings?.[d.key], r.dimension_details?.[d.key] || {})}</td>`).join("")}
+        ${dims.map((d) => `<td class="center">${ratingChip(r.ratings?.[d.key], r.dimension_details?.[d.key] || {}, d.key)}</td>`).join("")}
         <td>${recCell(r)}</td><td>${gatePill(r.gate_status)}</td>
         <td class="num">${fmtMoney(r.invested_est)}</td>
         <td class="num">${fmtMoney(r.maintenance_paid)}</td>

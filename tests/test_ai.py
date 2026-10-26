@@ -179,9 +179,12 @@ def test_facts_only_without_key(monkeypatch):
         p = c.get(f"/v1/portfolios/{st['portfolio_id']}", headers=H).json()
         assert p["data_mode"] == "live_record"
         row = c.get(f"/v1/score-runs/{p['latest_score_run_id']}/results", headers=H).json()["items"][0]
-        assert row["ratings"]["claim_quality"] is not None and row["ratings"]["competitive"] is not None
-        assert row["ratings"]["commercial"] is None  # needs AI or business inputs - left UNKNOWN, not zero
-        assert row["recommendation"] == "review" and row["review_reason"] == "insufficient_evidence"
+        assert all(v is not None for v in row["ratings"].values()), row["ratings"]  # no '?' for live patents
+        assert all(d["basis"] == "record" for d in row["dimension_details"].values())
+        lic = row["dimension_details"]["licensing"]["detail"]
+        assert "Microsoft" in " ".join(lic["evidence_points"]) and lic["why_not_higher"] and lic["next_step"]
+        assert row["dimension_details"]["future"]["detail"]["headline"].startswith("10.")  # ~10 years of term left
+        assert row["recommendation"] in ("retain", "review", "abandon")
 
 
 def test_bad_key_falls_back_to_records(monkeypatch):
@@ -278,3 +281,44 @@ def test_fee_stages_for_old_patent_all_paid():
                            "kind_code": "A", "jurisdiction": "US",
                            "signals": {"maintenance_fee_events": [{"event": "Fee payment", "year": y} for y in (4, 8, 12)]}}, date(2026, 10, 27))
     assert [s["state"] for s in st] == ["paid_record"] * 3
+
+
+STRUCTURED = {"rating": 4, "confidence": 0.7, "headline": "Strong licensing leads: Microsoft and Meta ship headset wear-detection features mapping to claim 1.",
+              "technical_basis": "Claim 1 requires HMD position/orientation sensing, a gesture inferred from it, and session-end processing.",
+              "evidence_points": ["Microsoft US11000001B2 (2021) describes headset state detection ending a session on removal.",
+                                  "Meta US11200002B2 (2021) claims wear detection that suspends VR sessions."],
+              "why_not_higher": "No confirmed licence or claim chart.", "why_not_lower": "Two major vendors with matching features.",
+              "risks": "Feature may use proximity sensors rather than HMD pose.", "next_step": "Claim-chart Quest headset sleep behaviour against claim 1.",
+              "evidence": [{"url": "https://patents.google.com/patent/US11000001B2/en", "title": "US11000001B2", "date": "2021-05-11", "finding": "Headset state detection."}]}
+
+
+def test_structured_ai_rating_reaches_hover(monkeypatch):
+    from app import google_patents
+
+    class StructMsgs(FakeMessages):
+        def create(self, **kw):
+            prompt = kw["messages"][0]["content"]
+            if "PARAMETER:" not in prompt:  # key check
+                return NS(content=[NS(type="text", text="OK")], stop_reason="end_turn", usage=None)
+            assert "Record-based baseline" in prompt and "SUGGESTED SEARCHES" in prompt and "claim1_full" in prompt
+            return NS(content=[NS(type="text", text="<json>" + json.dumps(STRUCTURED) + "</json>")], stop_reason="end_turn",
+                      usage=NS(input_tokens=10, output_tokens=10, server_tool_use=None))
+
+    class C:
+        def __init__(self):
+            self.messages = StructMsgs([])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-test")
+    monkeypatch.setattr(google_patents, "fetch_html", _fake_fetch)
+    ai._client_factory = lambda: C()
+    try:
+        with TestClient(app) as c:
+            st = _run_job(c, "US10055028B2")
+            p = c.get(f"/v1/portfolios/{st['portfolio_id']}", headers=H).json()
+            row = c.get(f"/v1/score-runs/{p['latest_score_run_id']}/results", headers=H).json()["items"][0]
+            d = row["dimension_details"]["licensing"]
+            assert d["basis"] == "ai" and d["detail"]["headline"].startswith("Strong licensing leads")
+            assert "Microsoft US11000001B2" in d["detail"]["evidence_points"][0] and d["detail"]["why_not_lower"]
+            assert len(d["rationale"]) > 600  # not truncated
+            assert all(v == 4 for v in row["ratings"].values())
+    finally:
+        ai._client_factory = None

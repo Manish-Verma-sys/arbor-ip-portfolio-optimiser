@@ -164,6 +164,7 @@ def parse(html: str, requested: str = "") -> dict:
     claims_sec = soup.select_one('section[itemprop="claims"]')
     total_claims = indep = claim1_words = None
     claim1 = ""
+    claims_list = []
     if claims_sec:
         cnt = _first(claims_sec, '[itemprop="count"]')
         total_claims = int(cnt) if cnt.isdigit() else None
@@ -179,6 +180,7 @@ def parse(html: str, requested: str = "") -> dict:
             wrapper_cls = n.parent.get("class", []) if n.parent else []
             is_dep = "claim-dependent" in wrapper_cls or n.select_one("claim-ref") is not None or bool(dep_re.search(text[:220]))
             live.append((n, text, is_dep))
+        claims_list = [{"text": t, "independent": not d} for _, t, d in live]
         if live:
             indep = sum(1 for _, _, d in live if not d)
             first_indep = next((t for _, t, d in live if not d), live[0][1])
@@ -193,7 +195,9 @@ def parse(html: str, requested: str = "") -> dict:
         for r in soup.select(f'tr[itemprop="{prop}"]'):
             out.append({"pub": _txt(r.select_one('[itemprop="publicationNumber"]')) or _txt(r.select_one('[itemprop="representativePublication"]')),
                         "assignee": _txt(r.select_one('[itemprop="assigneeOriginal"]')), "app": _txt(r.select_one('[itemprop="applicationNumber"]')),
-                        "priority": _txt(r.select_one('[itemprop="priorityDate"]')), "filing": _txt(r.select_one('[itemprop="filingDate"]'))})
+                        "priority": _txt(r.select_one('[itemprop="priorityDate"]')), "filing": _txt(r.select_one('[itemprop="filingDate"]')),
+                        "published": _txt(r.select_one('[itemprop="publicationDate"]')), "title": _txt(r.select_one('[itemprop="title"]')),
+                        "examiner": r.select_one('[itemprop="examinerCited"]') is not None})
         return out
 
     fwd = _rows("forwardReferencesOrig") + _rows("forwardReferencesFamily")
@@ -216,6 +220,15 @@ def parse(html: str, requested: str = "") -> dict:
     has_cont = any(r["pub"] != pub and r["pub"].startswith("US") and (r["filing"] or "") > (_first(soup, 'time[itemprop="filingDate"]') or "")
                    for r in claiming)
 
+    foreign = []
+    for r in prio + claiming:
+        cc = (r["pub"] or r["app"] or "")[:2]
+        if cc and cc != "US" and r["pub"]:
+            foreign.append(r["pub"])
+    foreign = sorted(set(foreign))
+    citing_docs = [{"pub": r["pub"], "assignee": r["assignee"], "published": (r["published"] or r["priority"] or "")[:10], "title": r["title"][:120],
+                    "examiner_cited": r["examiner"]} for r in fwd if r["pub"]]
+    citing_docs.sort(key=lambda d: d["published"] or "", reverse=True)
     mentions = [f"{e['date']}: {e['title']} {e['text']}".strip() for e in legal
                 if re.search(r"litigat|lawsuit|inter partes|\bIPR\b|reexam|certificate of correction", e["title"] + " " + e["text"], re.I)]
     abstract = _first(soup, 'section[itemprop="abstract"] div.abstract') or _first(soup, 'section[itemprop="abstract"]')
@@ -234,6 +247,11 @@ def parse(html: str, requested: str = "") -> dict:
         "maintenance_fee_events": fee_events, "entity_status": entity,
         "cpc_main": cpc_all[0] if cpc_all else None, "cpc_all": cpc_all,
         "cpc_description": cpcs_sorted[0][2] if cpcs_sorted else None,
+        "cpc_descriptions": {c[1]: c[2] for c in cpcs_sorted[:8]},
+        "claim1_full": " ".join(claim1.split()[:400]),
+        "independent_claims_text": [" ".join(c["text"].split()[:90]) for c in claims_list if c["independent"]][:5],
+        "dependent_claims_text": [" ".join(c["text"].split()[:40]) for c in claims_list if not c["independent"]][:10],
+        "citing_documents": citing_docs[:25], "foreign_family": foreign[:15],
         "independent_claims": indep, "total_claims": total_claims, "claim1_word_count": claim1_words,
         "claim1_summary": " ".join(claim1.split()[:45]) + ("…" if claim1 and len(claim1.split()) > 45 else ""),
         "forward_citations": len(fwd), "top_citing_assignees": [a for a, _ in citers.most_common(6)],

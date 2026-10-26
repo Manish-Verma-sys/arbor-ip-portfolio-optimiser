@@ -160,6 +160,8 @@ Rules:
 - Report only what the sources support. If something cannot be verified, use null (or an empty list). Never invent dates, numbers, owners or products.
 - Prefer primary sources: patents.google.com, USPTO (patentcenter.uspto.gov, assignment.uspto.gov, ppubs.uspto.gov), the owner's own website, SEC filings, court/PTAB records.
 - Keep quoted text under 15 words; otherwise paraphrase.
+- Write like a senior patent analyst briefing an IP manager who must decide whether to pay the next maintenance fee: concrete, technical, named. Refer to specific claim elements, named companies, named products, document numbers and dates. Avoid generic statements that would fit any patent.
+- Always give an integer rating. When evidence is thin, give your best provisional estimate and lower the confidence - never leave the rating empty.
 - When you are done researching, output exactly one JSON object wrapped in <json></json> tags and nothing after it."""
 
 FACTS_PROMPT = """Collect the public record for US patent {num} (as of {today}).
@@ -197,14 +199,23 @@ Return this JSON schema (use null where unknown):
  "sources": [url]
 }}"""
 
-RATING_SCHEMA = """Return exactly this JSON schema:
-{{"rating": 0-5 integer (use a provisional best-estimate score rather than null when any defensible estimate is possible; null only when even a provisional estimate is impossible),
- "rationale": "120-220 words. Give a technical, evidence-led explanation: identify the patent's relevant technical mechanism/claim features; state the observed evidence; connect each major signal to the rubric; explain why this score was chosen over the adjacent score; distinguish verified facts from inference; describe counter-evidence, uncertainty and missing evidence; end with the most useful next verification step.",
- "confidence": 0.0-1.0 (evidence confidence, not confidence in eloquence; low when relying on indirect signals or fallback inference),
- "evidence": [{{"url": str, "title": str, "date": "YYYY-MM-DD"|null, "finding": "40-80 words describing the specific relevant finding and its technical/business significance"}}] (up to 6; include only real consulted sources, prioritise primary sources; never fabricate URLs or source findings)}}"""
+RATING_SCHEMA = """Return exactly this JSON (every field required):
+{{"rating": integer 0-5 (always an integer - a provisional estimate is better than none),
+ "confidence": number 0.0-1.0 (strength of the evidence, not of your writing; below 0.5 when relying on indirect signals),
+ "headline": "one sentence, max 30 words: the verdict and the single most important reason",
+ "technical_basis": "50-110 words: which claim elements / technical mechanism drive this parameter and why (name the elements)",
+ "evidence_points": ["3-5 items, each max 40 words, each a concrete finding naming the company / product / document number / date and what it shows"],
+ "why_not_higher": "max 40 words: the specific missing evidence or weakness that stops the next score up",
+ "why_not_lower": "max 40 words: the specific evidence that rules out the next score down",
+ "risks": "max 40 words: counter-evidence, validity or interpretation risks",
+ "next_step": "max 25 words: the single most useful verification step",
+ "evidence": [{{"url": str, "title": str, "date": "YYYY-MM-DD"|null, "finding": "max 50 words"}}] (up to 6 real sources you actually consulted; never invent URLs)}}"""
 
-FACT_BLOCK = """Patent facts (verified in step 1, today is {today}):
+FACT_BLOCK = """Patent record (read from Google Patents; today is {today}):
 {facts}
+
+Record-based baseline for THIS parameter (computed from the record only, not verified research - confirm or overturn it with evidence):
+{baseline}
 """
 
 DIM_PROMPTS = {
@@ -290,6 +301,17 @@ ANALYSIS REQUIRED: Explain (1) remaining enforceable term and key status caveats
 
 RUBRIC: 5 = 10+ years remaining and strong evidence of a growing/relevant market; 4 = 7+ years and credible growth/use signals; 3 = moderate term or stable market with plausible applications; 2 = under 5 years or weakening relevance; 1 = under 2 years or strong decline/substitution signals; 0 = verified expired/lapsed status with no realistic remaining rights. If term or market data is incomplete, give a provisional score and lower confidence; do not return null solely for missing trend statistics.""",
     },
+}
+
+
+SEARCH_GUIDES = {
+ "commercial": "SUGGESTED SEARCHES (adapt as needed): {owner} product {terms}; \"{owner}\" virtual patent marking {num_short}; {owner} {product_area} product launch; {owner} {product_area} discontinued; site of {owner} support/datasheet pages for the claim-1 feature.\nOUTPUT FOCUS: name the specific {owner} product(s) or service(s) and the feature that would correspond to claim-1 elements; say which elements are evidenced and which are not.",
+ "claim_quality": "SUGGESTED SEARCHES: \"{num}\" inter partes review; \"{num}\" reexamination; \"{num}\" invalid; USPTO Patent Center file wrapper for application {app}.\nOUTPUT FOCUS: quote/paraphrase the limiting elements of claim 1, name the fallback dependent claims, and state concrete design-around routes a competitor could take.",
+ "competitive": "SUGGESTED SEARCHES: {citers_q} {terms}; \"{num}\" standard essential; {product_area} market leaders products {terms}.\nOUTPUT FOCUS: use the citing_documents list - name the citing companies, their patent numbers and what their inventions do relative to claim 1; say whether those companies sell products in this space.",
+ "strategic": "SUGGESTED SEARCHES: {owner} annual report {product_area}; {owner} {product_area} strategy 2025 2026; {owner} acquisition OR shutdown {product_area}.\nOUTPUT FOCUS: name the {owner} business unit/product line this protects, current investment or exit signals (with dates), and whether competitors would need the claimed approach.",
+ "portfolio": "SUGGESTED SEARCHES: Google Patents assignee \"{owner}\" {terms}; Google Patents assignee \"{owner}\" CPC {cpc_group}.\nOUTPUT FOCUS: name the closest same-owner patents (numbers) and explain in one line each whether they overlap or complement claim 1; use the citing_documents list to spot the owner's own follow-on filings.",
+ "licensing": "SUGGESTED SEARCHES: {citers_q} product {terms}; \"{num}\" license OR licensing OR lawsuit; {product_area} products {terms} -{owner}.\nOUTPUT FOCUS: name 2-4 candidate licensees with a specific product and the claim-1 elements it appears to use (as leads, not infringement findings), plus remaining term and any encumbrance.",
+ "future": "SUGGESTED SEARCHES: {product_area} market forecast 2030; {terms} adoption trend; {product_area} next generation products.\nOUTPUT FOCUS: state remaining term in years, whether the specific claimed technique is emerging/scaling/mature/declining with a dated source, and what could make it obsolete before {exp}."
 }
 
 
@@ -379,55 +401,99 @@ def get_facts(num: str, today: date) -> tuple[dict, list[str], dict]:
 
 def _fmt_facts(f: dict) -> str:
     keep = ["publication_number", "title", "abstract", "current_assignee", "original_assignee", "filing_date", "priority_date",
-            "grant_date", "kind", "legal_status", "status_detail", "anticipated_expiration", "entity_status", "cpc_main", "cpc_all",
-            "independent_claims", "total_claims", "claim1_word_count", "claim1_summary", "forward_citations", "top_citing_assignees",
-            "us_family_members", "continuation_of", "has_continuations", "litigation_or_licensing_mentions"]
-    return json.dumps({k: f.get(k) for k in keep}, indent=1, default=str)
+            "grant_date", "kind", "legal_status", "status_detail", "anticipated_expiration", "entity_status", "maintenance_fee_events",
+            "cpc_main", "cpc_descriptions", "independent_claims", "total_claims", "claim1_word_count", "claim1_full",
+            "independent_claims_text", "dependent_claims_text", "forward_citations", "top_citing_assignees", "citing_documents",
+            "foreign_family", "us_family_members", "continuation_of", "has_continuations", "litigation_or_licensing_mentions"]
+    out = {k: f.get(k) for k in keep if f.get(k) not in (None, [], {}, "")}
+    if not out.get("claim1_full"):
+        out["claim1_summary"] = f.get("claim1_summary")
+    return json.dumps(out, indent=1, default=str, ensure_ascii=False)
 
 
-def build_dim_prompt(dim: str, num: str, f: dict, today: date) -> str:
+def _claim_terms(f: dict, k: int = 4) -> str:
+    """Distinctive multi-word phrases from claim 1 for targeted searches."""
+    text = (f.get("claim1_full") or f.get("claim1_summary") or f.get("title") or "").lower()
+    text = re.sub(r"\(.*?\)", " ", text)
+    text = re.sub(r"[;,:.]", " the ", text)
+    stop = {"the", "a", "an", "of", "at", "least", "one", "in", "on", "to", "and", "or", "said", "wherein", "comprising", "based", "with",
+            "for", "from", "by", "is", "are", "be", "while", "response", "each", "first", "second", "plurality", "least", "configured", "that"}
+    words = re.findall(r"[a-z][a-z\-]+", text)
+    phrases, cur = [], []
+    for w in words:
+        if w in stop:
+            if 2 <= len(cur) <= 4:
+                phrases.append(" ".join(cur))
+            cur = []
+        else:
+            cur.append(w)
+    uniq = []
+    for ph in sorted(set(phrases), key=lambda x: (-len(x.split()), -len(x))):
+        if len(ph) > 10 and not any(ph in u for u in uniq):
+            uniq.append(ph)
+    order = [ph for ph in phrases if ph in uniq]
+    out = list(dict.fromkeys(order))
+    return ", ".join(f'"{ph}"' for ph in out[:k]) or f'"{(f.get("title") or "")[:60]}"'
+
+
+def build_dim_prompt(dim: str, num: str, f: dict, today: date, baseline: Optional[dict] = None) -> str:
     spec = DIM_PROMPTS[dim]
-    body = spec["prompt"].format(
-        num=num, owner=f.get("current_assignee") or f.get("original_assignee") or "the owner",
-        claim=(f.get("claim1_summary") or f.get("title") or "")[:240], cpc=f.get("cpc_main") or "unknown CPC",
-        citers=", ".join((f.get("top_citing_assignees") or [])[:5]) or "none listed",
-        cont=f.get("has_continuations"), family=", ".join((f.get("us_family_members") or [])[:6]) or "none listed",
-        exp=f.get("anticipated_expiration") or "unknown", today=today.isoformat())
-    return FACT_BLOCK.format(today=today.isoformat(), facts=_fmt_facts(f)) + "\n" + body + "\n\n" + RATING_SCHEMA.format()
+    owner = f.get("current_assignee") or f.get("original_assignee") or "the owner"
+    citers = [c for c in (f.get("top_citing_assignees") or []) if c][:4]
+    product_area = (f.get("cpc_description") or f.get("title") or "")[:80]
+    fill = dict(num=num, owner=owner, claim=(f.get("claim1_summary") or f.get("title") or "")[:240], cpc=f.get("cpc_main") or "unknown CPC",
+                citers=", ".join(citers) or "none listed", cont=f.get("has_continuations"),
+                family=", ".join((f.get("us_family_members") or [])[:6]) or "none listed",
+                exp=f.get("anticipated_expiration") or "unknown", today=today.isoformat())
+    body = spec["prompt"].format(**fill)
+    guide = SEARCH_GUIDES.get(dim, "").format(
+        **fill, terms=_claim_terms(f), num_short=re.sub(r"^US|B\d$|A\d$", "", num), product_area=product_area,
+        app=f.get("application_number") or "n/a", cpc_group=(f.get("cpc_main") or "").split("/")[0] or "n/a",
+        citers_q=" OR ".join(f'"{c}"' for c in citers) or '"competitors"')
+    base = "none available"
+    if baseline:
+        base = json.dumps({k: baseline.get(k) for k in ("rating", "headline", "evidence_points", "why_not_higher")}, ensure_ascii=False)
+    return (FACT_BLOCK.format(today=today.isoformat(), facts=_fmt_facts(f), baseline=base) + "\n" + body + "\n\n" + guide
+            + "\n\n" + RATING_SCHEMA.format())
 
 
-def rate_dimension(dim: str, num: str, facts: dict, today: date) -> tuple[dict, dict]:
+def _norm_rating(data: dict, urls: list[str]) -> dict:
+    r = data.get("rating")
+    r = None if r is None else max(0, min(5, int(round(float(r)))))
+    conf = data.get("confidence")
+    conf = 0.5 if conf is None else max(0.0, min(1.0, float(conf)))
+    ev = [e for e in (data.get("evidence") or []) if isinstance(e, dict) and e.get("url")][:6]
+    if not ev and urls:
+        ev = [{"url": u, "title": "", "date": None, "finding": "Source consulted during research"} for u in urls[:3]]
+    out = {"rating": r, "confidence": conf, "evidence": ev}
+    for k in ("headline", "technical_basis", "why_not_higher", "why_not_lower", "risks", "next_step"):
+        out[k] = str(data.get(k) or "")[:900]
+    out["evidence_points"] = [str(p)[:400] for p in (data.get("evidence_points") or []) if p][:5]
+    from .record_rating import compose
+    out["rationale"] = compose(out) if out["headline"] else str(data.get("rationale") or "")[:2500]
+    return out
+
+
+def rate_dimension(dim: str, num: str, facts: dict, today: date, baseline: Optional[dict] = None) -> tuple[dict, dict]:
     try:
-        data, urls, usage = _call(build_dim_prompt(dim, num, facts, today), DIM_PROMPTS[dim]["tools"], 6144)
-        r = data.get("rating")
-        r = None if r is None else max(0, min(5, int(round(float(r)))))
-        conf = data.get("confidence")
-        conf = 0.5 if conf is None else max(0.0, min(1.0, float(conf)))
-        ev = [e for e in (data.get("evidence") or []) if isinstance(e, dict)][:4]
-        if not ev and urls:
-            ev = [{"url": u, "title": "", "date": None, "finding": "Source consulted during research"} for u in urls[:2]]
-        return {"rating": r, "rationale": str(data.get("rationale") or "")[:600], "confidence": conf, "evidence": ev}, usage
+        data, urls, usage = _call(build_dim_prompt(dim, num, facts, today, baseline), DIM_PROMPTS[dim]["tools"], 8000)
+        out = _norm_rating(data, urls)
+        if out["rating"] is None and baseline:
+            out["rating"], out["confidence"] = baseline["rating"], min(out["confidence"], baseline.get("confidence", 0.4))
+        return out, usage
     except Exception as ex:  # noqa: BLE001
-        # Retry once with a focused, tool-free prompt. This can recover ratings when
-        # web-search tool calls fail, time out, or produce malformed responses.
+        # Retry once without web tools (search can time out or return malformed output).
         try:
-            fallback_prompt = (build_dim_prompt(dim, num, facts, today)
-                + "\n\nUse ONLY the patent facts supplied above. Give a conservative 0-5 "
-                  "rating if the facts support one; explain uncertainty and keep confidence "
-                  "low. Do not invent owner-specific commercial, strategic or licensing facts. "
-                  "If evidence is genuinely insufficient, return null.")
-            data, urls, usage = _call(fallback_prompt, [], 4096)
-            raw = data.get("rating")
-            rating = None if raw is None else max(0, min(5, int(round(float(raw)))))
-            return {"rating": rating, "rationale": str(data.get("rationale") or "")[:600],
-                    "confidence": min(0.5, max(0.0, float(data.get("confidence") or 0.2))),
-                    "evidence": [e for e in (data.get("evidence") or []) if isinstance(e, dict)][:4],
-                    "retry_without_web": True}, usage
+            data, urls, usage = _call(build_dim_prompt(dim, num, facts, today, baseline)
+                                      + "\n\nWeb research is unavailable for this attempt: reason from the patent record above only, keep confidence below 0.5.",
+                                      [], 5000)
+            out = _norm_rating(data, urls)
+            out["retry_without_web"] = True
+            out["confidence"] = min(out["confidence"], 0.5)
+            return out, usage
         except Exception as retry_ex:  # noqa: BLE001
-            return {"rating": None,
-                    "rationale": f"Assessment unavailable ({type(ex).__name__}; retry: {type(retry_ex).__name__}). Evidence needed.",
-                    "confidence": 0.0, "evidence": [], "error": True}, {
-                        "input_tokens": 0, "output_tokens": 0, "web_searches": 0}
+            return {"rating": None, "rationale": f"AI assessment unavailable ({type(ex).__name__}; retry: {type(retry_ex).__name__}).",
+                    "confidence": 0.0, "evidence": [], "error": True}, {"input_tokens": 0, "output_tokens": 0, "web_searches": 0}
 
 
 def analyse_patent(num: str, today: date, on_step: Callable[[str], None] = lambda m: None, use_ai: Optional[bool] = None) -> dict:
@@ -448,11 +514,13 @@ def analyse_patent(num: str, today: date, on_step: Callable[[str], None] = lambd
         on_step(f"{num}: direct read failed ({str(ex)[:80]}); asking Claude to fetch the record")
         facts, fact_urls, usage = get_facts(num, today)
         facts["source"] = "claude_web_fetch"
+    from . import record_rating
+    record = record_rating.estimate(facts, today)
     ratings = {}
     if use_ai:
         on_step(f"{num}: rating 7 parameters with {model_name()}")
         with ThreadPoolExecutor(max_workers=4) as pool:
-            futs = {dim: pool.submit(rate_dimension, dim, num, facts, today) for dim in DIM_PROMPTS}
+            futs = {dim: pool.submit(rate_dimension, dim, num, facts, today, record.get(dim)) for dim in DIM_PROMPTS}
             for dim, fut in futs.items():
                 ratings[dim], u = fut.result()
                 for k in usage:
@@ -461,7 +529,10 @@ def analyse_patent(num: str, today: date, on_step: Callable[[str], None] = lambd
             on_step(f"{num}: AI assessment failed for all parameters - continuing with record-based ratings only")
     else:
         on_step(f"{num}: record-based ratings only (commercial, strategic and licensing need AI or your inputs)")
-    return {"number": num, "facts": facts, "fact_urls": fact_urls, "ratings": ratings, "usage": usage,
+    n_ai = sum(1 for r in ratings.values() if r.get("rating") is not None and not r.get("error"))
+    if n_ai < len(record):
+        on_step(f"{num}: {len(record) - n_ai} parameter(s) rated from the patent record (record estimate)")
+    return {"number": num, "facts": facts, "fact_urls": fact_urls, "ratings": ratings, "record": record, "usage": usage,
             "model": model_name() if use_ai else None}
 
 
@@ -493,7 +564,9 @@ def to_asset(result: dict, entity_size: str, as_of: date) -> dict:
     size = entity_size if entity_size in ("large", "small", "micro") else (es if es in ("large", "small", "micro") else "large")
     owner = f.get("current_assignee") or None
     now_dt = __import__("datetime").datetime.combine(as_of, __import__("datetime").datetime.min.time())
-    ai_ratings = {d: {k: v for k, v in r.items() if k != "evidence"} for d, r in result["ratings"].items() if not r.get("error")}
+    ai_ratings = {d: {k: v for k, v in r.items() if k != "evidence"} for d, r in result["ratings"].items()
+                  if not r.get("error") and r.get("rating") is not None}
+    record_ratings = {d: {k: v for k, v in r.items() if k != "evidence"} for d, r in (result.get("record") or {}).items()}
     pub_d = _date(f.get("publication_date")) or grant or filing
     years_out = max(0.5, (as_of - pub_d).days / 365.25) if pub_d else 3
     from .catalog import TECH
@@ -506,10 +579,10 @@ def to_asset(result: dict, entity_size: str, as_of: date) -> dict:
         "independent_claims": _int(f.get("independent_claims")), "total_claims": _int(f.get("total_claims")),
         "claim1_words": _int(f.get("claim1_word_count")), "forward_citations": _int(f.get("forward_citations")),
         "competitor_names": (f.get("top_citing_assignees") or [])[:6], "competitor_citations": len(f.get("top_citing_assignees") or []),
-        "cohort_citation_median": max(1, int(round(years_out * 1.0))), "tech_trend_growth": trend,
+        "cohort_citation_median": max(1, int(round(years_out * 1.0))), "tech_trend_growth": None,
         "legal_events": f.get("legal_events") or [], "data_source": f.get("source"),
         "maintenance_fee_events": f.get("maintenance_fee_events") or [], "status_detail": f.get("status_detail"),
-        "claim1_summary": f.get("claim1_summary"), "ai_ratings": ai_ratings or None, "ai_model": result.get("model"),
+        "claim1_summary": f.get("claim1_summary"), "ai_ratings": ai_ratings or None, "record_ratings": record_ratings or None, "ai_model": result.get("model"),
         "ai_usage": result.get("usage"), "expected_remaining_office_actions": 1.5 if status == "pending" else 0,
     }
     obligations = []
