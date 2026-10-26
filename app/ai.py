@@ -373,15 +373,26 @@ def rate_dimension(dim: str, num: str, facts: dict, today: date) -> tuple[dict, 
             ev = [{"url": u, "title": "", "date": None, "finding": "Source consulted during research"} for u in urls[:2]]
         return {"rating": r, "rationale": str(data.get("rationale") or "")[:600], "confidence": conf, "evidence": ev}, usage
     except Exception as ex:  # noqa: BLE001
-        # Never silently turn a failed live assessment into a verified rating. Use a clearly
-        # labelled neutral placeholder so the UI remains numeric, while confidence stays low
-        # and the rationale makes the missing evidence explicit for human review.
-        return {"rating": 3, "rationale": (
-                    f"PROVISIONAL PLACEHOLDER (not an evidence-backed assessment): live assessment failed "
-                    f"({type(ex).__name__}). Neutral midpoint used only to avoid a blank display; "
-                    "verify this parameter with evidence before making a portfolio decision."
-                ), "confidence": 0.1, "evidence": [], "provisional": True, "error": False}, {
-                    "input_tokens": 0, "output_tokens": 0, "web_searches": 0}
+        # Retry once with a focused, tool-free prompt. This can recover ratings when
+        # web-search tool calls fail, time out, or produce malformed responses.
+        try:
+            fallback_prompt = (build_dim_prompt(dim, num, facts, today)
+                + "\n\nUse ONLY the patent facts supplied above. Give a conservative 0-5 "
+                  "rating if the facts support one; explain uncertainty and keep confidence "
+                  "low. Do not invent owner-specific commercial, strategic or licensing facts. "
+                  "If evidence is genuinely insufficient, return null.")
+            data, urls, usage = _call(fallback_prompt, [], 1200)
+            raw = data.get("rating")
+            rating = None if raw is None else max(0, min(5, int(round(float(raw)))))
+            return {"rating": rating, "rationale": str(data.get("rationale") or "")[:600],
+                    "confidence": min(0.5, max(0.0, float(data.get("confidence") or 0.2))),
+                    "evidence": [e for e in (data.get("evidence") or []) if isinstance(e, dict)][:4],
+                    "retry_without_web": True}, usage
+        except Exception as retry_ex:  # noqa: BLE001
+            return {"rating": None,
+                    "rationale": f"Assessment unavailable ({type(ex).__name__}; retry: {type(retry_ex).__name__}). Evidence needed.",
+                    "confidence": 0.0, "evidence": [], "error": True}, {
+                        "input_tokens": 0, "output_tokens": 0, "web_searches": 0}
 
 
 def analyse_patent(num: str, today: date, on_step: Callable[[str], None] = lambda m: None, use_ai: Optional[bool] = None) -> dict:
