@@ -277,6 +277,7 @@ def result_row(a: PatentAsset, s: PatentScore, decision: ReviewDecision | None =
         "review_reason": (s.explanation or {}).get("review_reason"),
         "review_reason_label": (s.explanation or {}).get("review_reason_label"),
         "ratings": {k: v.get("rating") for k, v in (s.dimension_scores or {}).items()},
+        "dimension_details": {k: {"rationale": v.get("rationale"), "basis": v.get("basis"), "confidence": v.get("confidence"), "evidence_count": len(v.get("evidence") or [])} for k, v in (s.dimension_scores or {}).items()},
         "gate_status": s.gate_status, "gate_codes": [g["code"] for g in s.gate_reasons],
         "cost_3y": totals.get("3", {}).get("total"), "cost_5y": totals.get("5", {}).get("total"),
         "cost_unknown": (s.cost or {}).get("unknown", False),
