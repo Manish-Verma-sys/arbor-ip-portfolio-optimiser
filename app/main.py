@@ -383,8 +383,30 @@ def confirm_entity(sid: str, body: ConfirmIn, user: User = Depends(current_user)
 
 @app.get("/v1/ai/status")
 def ai_status():
-    return {"configured": ai.configured(), "model": ai.model_name(), "max_patents": ai.MAX_PATENTS,
-            "note": None if ai.configured() else "Set ANTHROPIC_API_KEY on the server to enable live patent analysis."}
+    return {"configured": ai.configured(), "model": ai.model_name(), "max_patents": ai.MAX_PATENTS, "key": ai.key_info(),
+            "note": None if ai.configured() else "Set ANTHROPIC_API_KEY on the server to add AI ratings. Without it, patents are read from Google Patents and rated on record data only."}
+
+
+@app.post("/v1/ai/test")
+def ai_test(user: User = Depends(current_user)):
+    require(user, "search")
+    return ai.test_key()
+
+
+@app.get("/v1/patent-lookup/{number}")
+def patent_lookup(number: str, user: User = Depends(current_user)):
+    """Read one patent straight from Google Patents (no AI) - used for previews and diagnostics."""
+    from . import google_patents
+    n = ai.normalize_number(number)
+    if not n:
+        raise HTTPException(400, "Not a recognisable US patent number")
+    try:
+        f = google_patents.lookup(n)
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(404, f"Could not read {n} from Google Patents: {ex}")
+    f.pop("legal_events", None)
+    f.pop("events", None)
+    return f
 
 
 class PatentListIn(BaseModel):
@@ -394,8 +416,6 @@ class PatentListIn(BaseModel):
 
 
 def _start_patent_job(db, user, numbers: list[str], rejected: list[str], name: Optional[str], entity_size: str):
-    if not ai.configured():
-        raise HTTPException(409, "Live analysis is not configured: the server has no ANTHROPIC_API_KEY.")
     if not numbers:
         raise HTTPException(400, "No valid US patent numbers found. Use formats like US10123456B2, 10,123,456 or US20210123456A1."
                             + (f" Not recognised: {', '.join(rejected[:5])}" if rejected else ""))
@@ -420,7 +440,15 @@ def _patent_job(sid: str, user_id: str):
         s = db.get(PortfolioSearch, sid)
         user = db.get(User, user_id)
         nums = s.params["numbers"]
-        _set(db, s, "DISCOVERING", 8, f"Analysing {len(nums)} patent(s) live with {ai.model_name()} (web fetch + web search)")
+        use_ai = ai.configured()
+        if use_ai:
+            chk = ai.test_key()
+            if not chk.get("ok"):
+                use_ai = False
+                _set(db, s, "DISCOVERING", 6, "AI key check failed: " + (chk.get("hint") or chk.get("error", ""))[:220]
+                     + " - continuing with Google Patents record data only.")
+        _set(db, s, "DISCOVERING", 8, f"Analysing {len(nums)} patent(s): Google Patents record"
+             + (f" + 7 parameter assessments by {ai.model_name()}" if use_ai else " only (no AI ratings)"))
         done = {"n": 0}
         results, failed = [], []
         log = []
@@ -431,7 +459,7 @@ def _patent_job(sid: str, user_id: str):
 
         def one(n):
             try:
-                r = ai.analyse_patent(n, today(), step)
+                r = ai.analyse_patent(n, today(), step, use_ai=use_ai)
                 step(f"{n}: done")
                 return r
             except Exception as ex:  # noqa: BLE001
@@ -481,9 +509,10 @@ def _patent_job(sid: str, user_id: str):
                "data_mode": "live_ai", "customer_data": False}
         usage = {k: sum((r.get("usage") or {}).get(k, 0) for r in results) for k in ("input_tokens", "output_tokens", "web_searches")}
         pf = persist_generated(db, user.tenant_id, s.name, ent, {"families": fams, "assets": assets}, {"ownership_scope": "patent_list"},
-                               "patents", data_mode="live_ai",
-                               sources=[f"Google Patents / USPTO public records (live, {today().isoformat()})",
-                                        f"Web research by {ai.model_name()} (web search + web fetch)",
+                               "patents", data_mode="live_ai" if use_ai else "live_record",
+                               sources=[f"Google Patents public records, read directly ({today().isoformat()})",
+                                        (f"Parameter research by {ai.model_name()} (web search)" if use_ai else
+                                         "No AI ratings: commercial, strategic and licensing need an API key or your business inputs"),
                                         f"Usage: {usage['input_tokens']:,} input / {usage['output_tokens']:,} output tokens, {usage['web_searches']} web searches"])
         if failed:
             pf.unavailable_sources = [f"{r['number']}: could not be analysed" for r in failed]
@@ -500,7 +529,7 @@ def _patent_job(sid: str, user_id: str):
         db.rollback()
         s = db.get(PortfolioSearch, sid)
         s.status = "FAILED"
-        s.error = ("None of the patents could be analysed. Check the numbers, or check the API key and its credit balance."
+        s.error = ("None of the patents could be read. Check they are valid US patent numbers (e.g. US10055028B2)."
                    if str(ex) == "ALL_FAILED" else f"Live analysis failed: {type(ex).__name__}. Please retry.")
         db.commit()
     finally:

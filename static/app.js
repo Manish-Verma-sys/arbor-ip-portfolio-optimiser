@@ -50,6 +50,15 @@ const GLOSS = {
   model: "The scoring model is the set of parameter weights and thresholds used to turn ratings into a score and an outcome. Change it on the Scoring model page, or try alternatives in Scenarios without changing the default.",
   attention: "Assets with a fee due within the warning window, a fee in its grace period, or a data conflict to resolve.",
   costyear: "Total forecast spend per calendar year: official fees plus estimated professional costs.",
+  money: "Money columns in US dollars. 'Est. invested to date' is sunk cost; 'Fees paid' is official maintenance fees already paid; 'Remaining dues to expiry' is what it will still cost to keep the patent in force until it expires.",
+  invested: "Estimated amount already spent on this patent: attorney drafting & filing, USPTO filing/search/examination fees, office-action responses, issue fee and maintenance fees paid so far. Official fees use USPTO schedules; professional costs use the assumptions on the Scoring model & costs page.",
+  feespaid: "USPTO maintenance fees already paid (3.5, 7.5 and 11.5-year fees), using the fee schedule in force on each due date and the entity size.",
+  remaining: "Total still to pay to keep the patent in force until it expires: remaining USPTO maintenance fees (plus surcharge if in grace) and annuity-service costs. For pending applications it also includes estimated prosecution and the issue fee. $0 when nothing is left or the patent is no longer in force.",
+  feestatus: "Status of each USPTO maintenance fee, worked out from the grant date, today's date and the legal status — and, for live patents, the actual fee-payment events on the register. Paid ✓ = on record or inferred; Due now = 6-month payment window open; Grace = surcharge period; Not paid = patent lapsed at that stage; — = not applicable.",
+  fee35: "Fee due 3.5 years after grant (window opens at 3 years; 6-month grace period with surcharge until 4 years).",
+  fee75: "Fee due 7.5 years after grant (window opens at 7 years; grace period until 8 years).",
+  fee115: "Fee due 11.5 years after grant (window opens at 11 years; grace period until 12 years). It is the last US maintenance fee.",
+  legalstatus: "Legal status from the patent register: Active (in force), Pending (application under examination), Expired (end of 20-year term), Lapsed (a maintenance fee was not paid), Abandoned. The expiry shown includes any patent-term adjustment where known.",
   scatter: "Each dot is an asset: further right = more expensive to keep, higher = more valuable. Bottom-right dots are the strongest candidates to drop.",
 };
 function tip(key, text) {
@@ -100,11 +109,29 @@ const fmtDT = (d) => (d ? new Date(d.endsWith("Z") ? d : d + "Z").toLocaleString
 const daysTo = (d) => (d ? Math.round((new Date(d + "T00:00:00") - new Date(new Date().toDateString())) / 86400000) : null);
 const recPill = (k, lbl) => `<span class="rec rec-${esc(k)}"><i aria-hidden="true"></i>${esc(lbl || recLabel(k))}</span>`;
 const recCell = (r) => `${recPill(r.recommendation)}${r.review_reason ? `<div class="xsmall reason">${esc(REASON_SHORT[r.review_reason] || r.review_reason)}</div>` : ""}`;
+const FEE_CHIP = {
+  paid_record: ["Paid", "fc-paid", "Paid — recorded on the USPTO register"], paid: ["Paid", "fc-paid2", "Paid — inferred: the patent stayed in force past this fee's grace period"],
+  due_now: ["Due now", "fc-due", "Payment window is open"], in_grace: ["Grace", "fc-grace", "In the 6-month grace period — surcharge applies"],
+  upcoming: ["Upcoming", "fc-up", "Not yet due"], not_paid: ["Not paid", "fc-unpaid", "Not paid — the patent lapsed at this stage"],
+  not_applicable: ["—", "fc-na", "Not applicable"], unknown: ["?", "fc-na", "Unknown"],
+};
+function feeChip(st) {
+  if (!st) return '<span class="fc fc-na">—</span>';
+  const [lbl, cls, help] = FEE_CHIP[st.state] || ["?", "fc-na", st.label];
+  const sub = ["upcoming", "due_now", "in_grace"].includes(st.state) && st.due_date ? `<div class="xsmall muted">${fmtDate(st.due_date)}</div><div class="xsmall muted">${fmtMoney(st.amount)}</div>`
+    : ["paid", "paid_record"].includes(st.state) ? `<div class="xsmall muted">${fmtMoney(st.amount)}</div>` : "";
+  return `<span class="fc ${cls}" title="${esc(st.label || help)}${st.due_date ? " · due " + esc(st.due_date) : ""}">${st.state === "paid_record" ? "✓ " : st.state === "paid" ? "✓ " : ""}${lbl}</span>${sub}`;
+}
+const LEGAL = { active: ["Active", "ls-active"], pending: ["Pending", "ls-pending"], expired: ["Expired", "ls-dead"], lapsed: ["Lapsed", "ls-dead"],
+  abandoned: ["Abandoned", "ls-dead"], withdrawn: ["Withdrawn", "ls-dead"], unknown: ["Unknown", "ls-dead"] };
+const legalCell = (r) => { const [l, c] = LEGAL[r.status] || [r.status, "ls-dead"];
+  return `<span class="ls ${c}">${esc(l)}</span>${r.status_detail && r.status_detail.toLowerCase() !== l.toLowerCase() ? `<div class="xsmall muted">${esc(r.status_detail)}</div>` : r.status === "lapsed" ? '<div class="xsmall muted">fee not paid</div>' : r.status === "expired" ? '<div class="xsmall muted">end of term</div>' : ""}${r.expiry_estimate && ["active", "pending"].includes(r.status) ? `<div class="xsmall muted">expires ${fmtDate(r.expiry_estimate)}</div>` : ""}`; };
 const ratingChip = (v) => (v === null || v === undefined ? '<span class="rt rt-u" title="UNKNOWN — not enough evidence">?</span>' : `<span class="rt rt-${v}" title="${v} of 5">${v}</span>`);
 const gatePill = (g) => `<span class="badge gate gate-${esc(g)}">${esc(g)}</span>`;
 const statusTxt = (s) => `<span class="status status-${esc(s)}">${esc(s)}</span>`;
 const modeBadge = (m) => (m === "synthetic" ? '<span class="badge b-syn" title="Fictional demonstration data">SYNTHETIC DEMO DATA</span>'
   : m === "live_ai" ? '<span class="badge b-live" title="Real public patent records, assessed by Claude">LIVE DATA · AI-ASSESSED</span>'
+  : m === "live_record" ? '<span class="badge b-live" title="Real public patent records (no AI ratings)">LIVE DATA · RECORD ONLY</span>'
   : m === "imported" ? '<span class="badge b-imp">CUSTOMER IMPORT</span>' : `<span class="badge b-mute">${esc(m)}</span>`);
 
 /* Multi-select dropdown: msel(name, [[value,label]...], selectedArray, allLabel) — read with mselValue(el) */
@@ -287,8 +314,10 @@ async function viewHome() {
       </form>
 
       <form id="pf" autocomplete="off" class="pane hide" data-pane="patents">
-        ${aiStatus.configured ? `<div class="callout callout-ocean small" style="margin-bottom:12px">${ICON.info}<div>Live analysis with <b>${esc(aiStatus.model)}</b>: reads each patent's public record (Google Patents / USPTO) and researches the 7 parameters on the web. Takes ~1 minute per patent; up to ${aiStatus.max_patents} per run.</div></div>`
-          : `<div class="callout callout-warn small" style="margin-bottom:12px">${ICON.warn}<div><b>Live analysis is not switched on yet.</b> The server needs an Anthropic API key (environment variable <code>ANTHROPIC_API_KEY</code>). You can still prepare and check your list.</div></div>`}
+        <div class="callout ${aiStatus.configured ? "callout-ocean" : "callout-warn"} small" style="margin-bottom:12px">${aiStatus.configured ? ICON.info : ICON.warn}<div>
+          Each patent is read <b>directly from Google Patents</b> (dates, legal status, fee payments, claims, citations, family).
+          ${aiStatus.configured ? `The 7 parameters are then researched by <b>${esc(aiStatus.model)}</b> (~1 min per patent, up to ${aiStatus.max_patents} per run).` : `<b>No API key is set</b>, so only record-based parameters are rated; commercial, strategic and licensing stay unknown.`}
+          <div class="btn-row" style="margin-top:6px"><span class="xsmall muted" id="keyInfo">${aiStatus.key && aiStatus.key.present ? `API key: ${esc(aiStatus.key.type)}${aiStatus.key.had_extra_whitespace_or_quotes ? " (extra spaces/quotes removed)" : ""}` : "API key: not set"}</span>${aiStatus.configured ? '<button type="button" class="btn btn-ghost btn-xs" id="testKey">Test API key</button>' : ""}</div></div></div>
         <label class="f"><span>US patent numbers ${tip(null, "One or more US patent or application numbers, separated by new lines, commas or spaces. Formats like US10123456B2, 10,123,456, US 9,876,543 B2 or US20210123456A1 all work.")}</span>
           <textarea class="input" name="numbers" rows="5" placeholder="US10123456B2&#10;US 9,876,543 B2&#10;US20210123456A1"></textarea></label>
         <div class="row2">
@@ -299,7 +328,7 @@ async function viewHome() {
         <div id="preview" class="small"></div>
         <div class="btn-row" style="justify-content:space-between;margin-top:6px">
           <button type="button" class="btn btn-quiet btn-sm" id="tplX">Download Excel template</button>
-          <div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="checkList">Check list</button><button class="btn btn-teal" ${aiStatus.configured ? "" : "disabled title='Needs ANTHROPIC_API_KEY on the server'"}>Analyse patents</button></div>
+          <div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="checkList">Check list</button><button class="btn btn-teal">Analyse patents</button></div>
         </div>
       </form>
     </div>
@@ -340,6 +369,13 @@ async function viewHome() {
     return r;
   };
   $("#checkList").addEventListener("click", () => check().catch((ex) => toast(ex.message, true)));
+  $("#testKey")?.addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Testing…";
+    try { const r = await api("/v1/ai/test", { method: "POST" });
+      $("#keyInfo").innerHTML = r.ok ? `<span class="ls ls-active">✓ API key works</span> (${esc(r.model)})` : `<span class="ls ls-dead">✗ Key not working${r.status_code ? " (" + r.status_code + ")" : ""}</span> — ${esc(r.hint || r.error || "")}`;
+    } catch (ex) { toast(ex.message, true); }
+    e.target.disabled = false; e.target.textContent = "Test API key";
+  });
   pform.file.addEventListener("change", () => check().catch((ex) => toast(ex.message, true)));
   $("#tplX").addEventListener("click", () => download("/v1/templates/patent-numbers.xlsx", "patent_numbers_template.xlsx"));
   pform.addEventListener("submit", async (e) => {
@@ -657,26 +693,33 @@ async function tabAssets(p, runId) {
       && (!has("recommendation") || f.recommendation.includes(r.recommendation)) && (!has("reason") || f.reason.includes(r.review_reason))
       && (!has("status") || f.status.includes(r.status)) && (!has("gate") || f.gate.includes(r.gate_status)) && (!has("due") || inDue(r, f.due)));
     const key = f.sort, dir = f.order === "asc" ? 1 : -1;
-    const val = (r) => (key === "cost_5y" ? (r.cost_5y === null ? null : Number(r.cost_5y)) : key.startsWith("dim:") ? r.ratings?.[key.slice(4)] : r[key]);
+    const val = (r) => (["cost_5y", "invested_est", "maintenance_paid", "remaining_dues"].includes(key) ? (r[key] === null || r[key] === undefined ? null : Number(r[key])) : key.startsWith("dim:") ? r.ratings?.[key.slice(4)] : r[key]);
     items = items.slice().sort((x, y) => { const a = val(x), b = val(y); if (a === null || a === undefined) return 1; if (b === null || b === undefined) return -1; return (a > b ? 1 : a < b ? -1 : 0) * dir; });
     const total = items.length, ps = 50, pages = Math.max(1, Math.ceil(total / ps));
     if (f.page > pages) f.page = pages;
     const pageItems = items.slice((f.page - 1) * ps, f.page * ps);
     const th = (k, l, cls = "", tk = null) => `<th class="${cls}"><span class="thw"><button data-sort="${k}">${l} ${f.sort === k ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button>${tk ? tip(tk) : ""}</span></th>`;
     $("#tbl").innerHTML = items.length ? `<div class="table-wrap"><table class="t assets-t"><thead>
-      <tr><th colspan="3"></th><th colspan="${dims.length}" class="grp">Parameter ratings (0–5) ${tip("rating")}</th><th colspan="5"></th></tr>
-      <tr>${th("publication_number", "Publication no.", "", null)}${th("title", "Title", "", "asset")}${th("strategic_score", "Score", "", "score")}
+      <tr><th colspan="4"></th><th colspan="${dims.length}" class="grp">Parameter ratings (0–5) ${tip("rating")}</th><th colspan="2"></th><th colspan="3" class="grp grp-cost">Cost to date &amp; to go (USD) ${tip("money")}</th><th colspan="3" class="grp grp-fee">Maintenance fee status ${tip("feestatus")}</th><th colspan="2"></th></tr>
+      <tr>${th("publication_number", "Publication no.", "stick", null)}${th("title", "Title", "", "asset")}${th("status", "Legal status", "", "legalstatus")}${th("strategic_score", "Score", "", "score")}
       ${dims.map((d) => `<th class="dimh"><span class="thw"><button data-sort="dim:${d.key}">${esc(DIM_SHORT[d.key])} ${f.sort === "dim:" + d.key ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button>${tip(d.key, d.label + ": " + DIM_HELP[d.key])}</span></th>`).join("")}
-      ${th("data_coverage", "Coverage", "num", "coverage")}${th("recommendation", "Outcome", "", "outcome")}<th><span class="thw">Checks ${tip("checks")}</span></th>${th("cost_5y", "5-yr cost", "num", "cost5")}${th("next_deadline", "Next fee due", "", "deadline")}</tr></thead>
+      ${th("recommendation", "Outcome", "", "outcome")}<th><span class="thw">Checks ${tip("checks")}</span></th>
+      ${th("invested_est", "Est. invested to date", "num", "invested")}${th("maintenance_paid", "Fees paid", "num", "feespaid")}${th("remaining_dues", "Remaining dues to expiry", "num", "remaining")}
+      <th class="center">3.5-yr ${tip("fee35")}</th><th class="center">7.5-yr ${tip("fee75")}</th><th class="center">11.5-yr ${tip("fee115")}</th>
+      ${th("next_deadline", "Next fee due", "", "deadline")}${th("data_coverage", "Coverage", "num", "coverage")}</tr></thead>
       <tbody>${pageItems.map((r) => `<tr data-id="${esc(r.patent_asset_id)}">
-        <td class="nowrap"><a class="pub" href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.publication_number)}</a><div class="xsmall muted">${statusTxt(r.status)}${r.relationship_type !== "original" ? " · " + esc(r.relationship_type) : ""}</div></td>
+        <td class="nowrap stick"><a class="pub" href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.publication_number)}</a>${r.relationship_type !== "original" ? `<div class="xsmall muted">${esc(r.relationship_type)}</div>` : ""}</td>
         <td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.title)}</a></td>
+        <td class="nowrap">${legalCell(r)}</td>
         <td>${r.strategic_score === null ? '<span class="unknown">n/a</span>' : `<div class="scorecell"><b>${r.strategic_score.toFixed(0)}</b><div class="bar" style="width:48px"><i style="width:${r.strategic_score}%"></i></div></div>`}</td>
         ${dims.map((d) => `<td class="center">${ratingChip(r.ratings?.[d.key])}</td>`).join("")}
-        <td class="num" title="Evidence confidence ${r.evidence_confidence.toFixed(0)}%">${r.data_coverage.toFixed(0)}%</td>
         <td>${recCell(r)}</td><td>${gatePill(r.gate_status)}</td>
-        <td class="num">${fmtMoney(r.cost_5y, r.cost_unknown)}</td>
-        <td class="nowrap small">${r.next_deadline ? `${fmtDate(r.next_deadline)}<div class="xsmall ${daysTo(r.next_deadline) <= 120 ? "rec-abandon" : "muted"}">${daysTo(r.next_deadline)} days</div>` : "—"}</td></tr>`).join("")}</tbody></table></div>
+        <td class="num">${fmtMoney(r.invested_est)}</td>
+        <td class="num">${fmtMoney(r.maintenance_paid)}</td>
+        <td class="num"><b>${fmtMoney(r.remaining_dues, r.cost_unknown)}</b></td>
+        ${["3.5", "7.5", "11.5"].map((st) => `<td class="center">${feeChip((r.fee_stages || []).find((x) => x.stage === st))}</td>`).join("")}
+        <td class="nowrap small">${r.next_deadline ? `${fmtDate(r.next_deadline)}<div class="xsmall ${daysTo(r.next_deadline) <= 120 ? "rec-abandon" : "muted"}">${daysTo(r.next_deadline)} days</div>` : "—"}</td>
+        <td class="num" title="Evidence confidence ${r.evidence_confidence.toFixed(0)}%">${r.data_coverage.toFixed(0)}%</td></tr>`).join("")}</tbody></table></div>
       <div class="pager"><span class="muted">${total} assets · page ${f.page} of ${pages}</span><div class="btn-row"><button class="btn btn-ghost btn-xs" id="prev" ${f.page <= 1 ? "disabled" : ""}>← Prev</button><button class="btn btn-ghost btn-xs" id="next" ${f.page >= pages ? "disabled" : ""}>Next →</button></div></div>`
       : `<div class="empty"><h3>No assets match</h3><p class="small">Adjust or clear the filters.</p></div>`;
     $$("[data-sort]").forEach((b) => b.addEventListener("click", () => { const k = b.dataset.sort; f.order = f.sort === k && f.order === "desc" ? "asc" : "desc"; f.sort = k; load(); }));
@@ -876,7 +919,20 @@ function evidenceCard(evs) {
 
 function costCard(c, actuals, a) {
   const t3 = c.totals["3"] || {}, t5 = c.totals["5"] || {};
-  return `<div class="card"><div class="card-head"><h3>Forward cost</h3><span class="small muted">${esc(c.currency)} · ${esc(c.assumption_version)}</span></div>
+  const inv = c.invested || { total: null, breakdown: [] };
+  const stages = c.fee_stages || [];
+  return `<div class="card"><div class="card-head"><h3>Costs &amp; maintenance fees ${tip("money")}</h3><span class="small muted">${esc(c.currency)} · ${esc(c.assumption_version)}</span></div>
+  <div class="metric-row" style="margin-top:0">
+    <div class="metric"><div class="lbl">Est. invested to date ${tip("invested")}</div><div class="val">${fmtMoney(inv.total)}</div></div>
+    <div class="metric"><div class="lbl">Maintenance fees paid ${tip("feespaid")}</div><div class="val">${fmtMoney(c.maintenance_paid)}</div></div>
+    <div class="metric"><div class="lbl">Remaining dues to expiry ${tip("remaining")}</div><div class="val">${fmtMoney(c.remaining_to_expiry, c.unknown)}</div></div>
+  </div>
+  <h4 style="margin-top:16px">Maintenance fee status ${tip("feestatus")}</h4>
+  <div class="table-wrap"><table class="t"><thead><tr><th>Fee</th><th>Due date</th><th>Status</th><th class="num">Official fee</th></tr></thead><tbody>
+  ${stages.map((x) => `<tr><td><b>${esc(x.stage)}-year</b></td><td class="small">${x.due_date ? fmtDate(x.due_date) : "—"}${x.grace_end ? `<div class="xsmall muted">grace until ${fmtDate(x.grace_end)}</div>` : ""}</td><td>${feeChip(x).split("<div")[0]}<div class="xsmall muted">${esc(x.label || "")}</div></td><td class="num">${x.state === "not_applicable" ? "—" : fmtMoney(x.amount)}${x.schedule_version ? `<div class="xsmall muted">${esc(x.schedule_version)}</div>` : ""}</td></tr>`).join("")}
+  </tbody></table></div>
+  ${inv.breakdown && inv.breakdown.length ? `<details class="adv" style="margin-top:10px"><summary>How “invested to date” is estimated</summary><table class="t"><tbody>${inv.breakdown.map((b) => `<tr><td class="small">${esc(b.label)}<div class="xsmall muted">${esc(b.basis)}</div></td><td class="num">${fmtMoney(b.amount)}</td></tr>`).join("")}<tr><td><b>Total</b></td><td class="num"><b>${fmtMoney(inv.total)}</b></td></tr></tbody></table><p class="xsmall muted">${esc(inv.note || "")}</p></details>` : ""}
+  <div class="divider"></div><h4>Forward cost (next 3 and 5 years)</h4>
   <div class="costsplit">${[["3-year", t3], ["5-year", t5]].map(([l, t]) => `<div class="metric"><div class="lbl">${l} forward cost</div><div class="val">${fmtMoney(t.total, c.unknown)}</div><div class="xsmall muted">Official ${fmtMoney(t.official)}${Number(t.surcharge) ? ` (incl. ${fmtMoney(t.surcharge)} surcharge)` : ""} · professional ${fmtMoney(t.professional)} (estimate)</div></div>`).join("")}</div>
   ${c.items.length ? `<div class="table-wrap" style="margin-top:12px"><table class="t"><thead><tr><th>Item</th><th>Date</th><th class="num">Official</th><th class="num">Professional</th><th>Basis</th></tr></thead><tbody>${c.items.map((i) => `<tr><td class="small">${esc(i.label)}${i.state === "in_grace" ? ' <span class="badge b-bad">grace period</span>' : i.state === "payable_now" ? ' <span class="badge b-warn">window open</span>' : ""}${i.schedule_version ? `<div class="xsmall muted">${esc(i.schedule_version)}</div>` : ""}</td><td class="small nowrap">${fmtDate(i.date)}</td><td class="num">${fmtMoney(Number(i.official_fee || 0) + Number(i.surcharge || 0))}</td><td class="num">${fmtMoney(i.professional_fee)}</td><td><span class="badge ${i.basis === "official_schedule" ? "b-ocean" : "b-mute"}">${i.basis === "official_schedule" ? "official schedule" : "estimate"}</span></td></tr>`).join("")}</tbody></table></div>` : ""}
   ${c.notes.length ? `<ul class="why-list small" style="margin-top:10px">${c.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}

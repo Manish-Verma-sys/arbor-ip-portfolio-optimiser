@@ -13,6 +13,8 @@ COLUMNS = [
     ("relationship_type", "Relationship"), ("current_owner", "Current owner"), ("strategic_score", "Score"),
     ("data_coverage", "Coverage %"), ("evidence_confidence", "Confidence %"), ("recommendation_label", "Recommendation"),
     ("review_reason_label", "Why review"), ("gate_status", "Checks"), ("gate_codes", "Check details"),
+    ("invested_est", "Est. invested to date (USD)"), ("maintenance_paid", "Maintenance fees paid (USD)"),
+    ("remaining_dues", "Remaining dues to expiry (USD)"), ("fee:3.5", "3.5-yr fee"), ("fee:7.5", "7.5-yr fee"), ("fee:11.5", "11.5-yr fee"),
     ("cost_3y", "Fwd cost 3y (USD)"), ("cost_5y", "Fwd cost 5y (USD)"),
     ("next_deadline", "Next deadline"), ("expiry_estimate", "Expiry (est.)"), ("last_status_check", "Status checked"),
 ] + [(f"rating:{k}", f"{v} (0-5)") for k, v in DIM_LABEL.items()]
@@ -38,6 +40,9 @@ def _meta_lines(portfolio, run) -> list[tuple[str, str]]:
 
 
 def _cell(r, k):
+    if k.startswith("fee:"):
+        st = next((x for x in r.get("fee_stages") or [] if x["stage"] == k[4:]), None)
+        return st["label"] if st else ""
     if k.startswith("rating:"):
         v = (r.get("ratings") or {}).get(k.split(":", 1)[1])
         return "UNKNOWN" if v is None else v
@@ -75,15 +80,20 @@ def to_xlsx(portfolio, run, rows) -> bytes:
         vals = []
         for k, _ in COLUMNS:
             v = _cell(r, k)
-            if k in ("cost_3y", "cost_5y") and v not in ("", None):
+            if k in ("cost_3y", "cost_5y", "invested_est", "maintenance_paid", "remaining_dues") and v not in ("", None):
                 v = float(v)
             vals.append(v)
         ws.append(vals)
     from openpyxl.utils import get_column_letter
-    widths = [20, 48, 6, 11, 16, 30, 8, 11, 12, 16, 40, 9, 36, 14, 14, 13, 13, 20] + [14] * 7
+    widths = [20, 48, 6, 11, 16, 30, 8, 11, 12, 16, 40, 9, 36, 16, 16, 16, 22, 22, 22, 14, 14, 13, 13, 20] + [14] * 7
     for i, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
-    for row in ws.iter_rows(min_row=2, min_col=14, max_col=15):
+    money_cols = [i + 1 for i, (k, _) in enumerate(COLUMNS) if "(USD)" in _]
+    for row in ws.iter_rows(min_row=2):
+        for c in row:
+            if c.column in money_cols and isinstance(c.value, str) and c.value.replace(".", "", 1).isdigit():
+                c.value = float(c.value)
+    for row in ws.iter_rows(min_row=2, min_col=min(money_cols), max_col=max(money_cols)):
         for c in row:
             c.number_format = '"$"#,##0.00'
     ws.freeze_panes = "C2"
@@ -142,8 +152,8 @@ def to_pdf(portfolio, run, rows, decisions_count: int = 0) -> bytes:
         story.append(td)
     story.append(Paragraph("Asset recommendations", h2))
     cols = ["publication_number", "title", "jurisdiction", "status", "strategic_score", "data_coverage", "evidence_confidence",
-            "recommendation_label", "review_reason_label", "cost_5y", "next_deadline"]
-    head = ["Publication", "Title", "Jur.", "Status", "Score", "Cov.%", "Conf.%", "Outcome", "Why review", "Cost 5y", "Next deadline"]
+            "recommendation_label", "review_reason_label", "invested_est", "remaining_dues", "next_deadline"]
+    head = ["Publication", "Title", "Jur.", "Status", "Score", "Cov.%", "Conf.%", "Outcome", "Why review", "Invested", "Remaining dues", "Next fee due"]
     data = [head]
     for r in rows:
         line = []
@@ -153,13 +163,13 @@ def to_pdf(portfolio, run, rows, decisions_count: int = 0) -> bytes:
                 v = Paragraph((v or "")[:90], small)
             elif k == "review_reason_label":
                 v = Paragraph((v or "").split(" — ")[0], small)
-            elif k == "cost_5y":
-                v = "unknown" if r.get("cost_unknown") else (f"${float(v):,.0f}" if v else "$0")
+            elif k in ("cost_5y", "invested_est", "remaining_dues"):
+                v = "unknown" if (r.get("cost_unknown") and k != "invested_est") else (f"${float(v):,.0f}" if v else "$0")
             elif v is None:
                 v = "—"
             line.append(v)
         data.append(line)
-    tbl = Table(data, repeatRows=1, colWidths=[30 * mm, 68 * mm, 10 * mm, 17 * mm, 12 * mm, 12 * mm, 13 * mm, 30 * mm, 38 * mm, 18 * mm, 21 * mm])
+    tbl = Table(data, repeatRows=1, colWidths=[28 * mm, 62 * mm, 9 * mm, 16 * mm, 11 * mm, 11 * mm, 12 * mm, 26 * mm, 34 * mm, 18 * mm, 20 * mm, 21 * mm])
     tbl.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), ocean), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                              ("FONTSIZE", (0, 0), (-1, -1), 7.5), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                              ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f3f3")]),

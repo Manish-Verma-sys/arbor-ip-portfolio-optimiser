@@ -493,3 +493,20 @@ div.f { margin-bottom: 12px; }
 .assets-t .pub { font-size: 12.5px; }
 .ev .src a { color: var(--ocean); text-decoration: none; }
 .ev .src a:hover { text-decoration: underline; }
+
+/* ---------- v1.3: money + fee status columns */
+.assets-t .grp-cost { background: #f5f8ff; color: var(--ocean); }
+.assets-t .grp-fee { background: #fdf8ee; color: #7a5a12; }
+.assets-t th.stick, .assets-t td.stick { position: sticky; left: 0; background: #fff; z-index: 2; box-shadow: 1px 0 0 var(--line-2); }
+.assets-t thead th.stick { z-index: 3; background: #fbfcfc; }
+.assets-t tr:hover td.stick { background: #fbfdfd; }
+.fc { display: inline-block; font-size: 11.5px; font-weight: 600; border-radius: 6px; padding: 2px 7px; white-space: nowrap; }
+.fc-paid { background: #dff3ea; color: #1b6e49; }
+.fc-paid2 { background: #eef8f3; color: #1b6e49; border: 1px dashed #a8d8c0; }
+.fc-due { background: #fdf0dc; color: #8a5a10; }
+.fc-grace { background: #f8e4de; color: #8e3a27; }
+.fc-up { background: #eef3f6; color: var(--ocean); }
+.fc-unpaid { background: #8e3a27; color: #fff; }
+.fc-na { color: #9aa5ab; font-weight: 400; }
+.ls { font-weight: 600; font-size: 12.5px; }
+.ls-active { color: var(--ok); } .ls-pending { color: var(--cobalt); } .ls-dead { color: #8e3a27; }

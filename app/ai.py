@@ -31,8 +31,47 @@ def model_name() -> str:
     return os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
 
 
+def clean_key(raw: Optional[str]) -> str:
+    """Tolerate common paste mistakes: whitespace/newlines, surrounding quotes, 'Bearer ' or 'ANTHROPIC_API_KEY=' prefixes."""
+    k = (raw or "").strip().strip('"').strip("'").strip()
+    k = re.sub(r"^(ANTHROPIC_API_KEY\s*=\s*|Bearer\s+)", "", k, flags=re.I).strip().strip('"').strip("'")
+    return re.sub(r"\s+", "", k)
+
+
 def configured() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    return bool(clean_key(os.environ.get("ANTHROPIC_API_KEY")))
+
+
+def key_info() -> dict:
+    """Describe the configured key WITHOUT revealing it (type prefix, length, paste problems)."""
+    raw = os.environ.get("ANTHROPIC_API_KEY")
+    if not raw:
+        return {"present": False}
+    k = clean_key(raw)
+    kind = ("standard API key" if k.startswith("sk-ant-api") else
+            "Admin key (cannot call the Messages API)" if k.startswith("sk-ant-admin") else
+            "OAuth / subscription token (not an API key)" if k.startswith("sk-ant-oat") else
+            "unrecognised format (expected to start with sk-ant-api)")
+    return {"present": True, "type": kind, "looks_valid": k.startswith("sk-ant-api") and len(k) > 80, "length": len(k),
+            "had_extra_whitespace_or_quotes": raw != k}
+
+
+def test_key() -> dict:
+    """Make one tiny authenticated call to check the key works."""
+    if not configured():
+        return {"ok": False, "error": "No ANTHROPIC_API_KEY set on the server."}
+    try:
+        c = _client()
+        resp = c.messages.create(model=model_name(), max_tokens=5, messages=[{"role": "user", "content": "Reply with OK"}])
+        return {"ok": True, "model": model_name(), "reply": "".join(getattr(b, "text", "") for b in resp.content)[:20]}
+    except Exception as ex:  # noqa: BLE001
+        code = getattr(ex, "status_code", None)
+        hint = {401: "Anthropic rejected the key (401). Re-copy it from console.anthropic.com > API keys, or create a new key, and paste it without spaces or quotes.",
+                403: "The key is valid but not allowed to use this model or feature (403).",
+                404: f"Model '{model_name()}' was not found for this key (404). Set ANTHROPIC_MODEL to a model your account can use.",
+                429: "Rate limited (429) - wait a minute and retry.",
+                400: "Request rejected (400) - often means the account has no credit balance."}.get(code, "")
+        return {"ok": False, "status_code": code, "error_type": type(ex).__name__, "error": str(ex)[:300], "hint": hint}
 
 
 _client_factory: Optional[Callable] = None  # tests inject a fake client here
@@ -42,12 +81,12 @@ def _client():
     if _client_factory:
         return _client_factory()
     import anthropic
-    return anthropic.Anthropic(max_retries=4, timeout=240)
+    return anthropic.Anthropic(api_key=clean_key(os.environ.get("ANTHROPIC_API_KEY")), max_retries=4, timeout=240)
 
 
 # ------------------------------------------------------------------ patent numbers
 
-GRANT_RE = re.compile(r"^(RE|D|PP)?0*(\d{5,8})(B1|B2|B3|E|S|S1|P2|P3)?$")
+GRANT_RE = re.compile(r"^(RE|D|PP)?0*(\d{5,8})(B1|B2|B3|A|E|S|S1|P2|P3)?$")
 APP_RE = re.compile(r"^(20\d{2})(\d{7})(A1|A2|A9)?$")
 
 
@@ -338,18 +377,37 @@ def rate_dimension(dim: str, num: str, facts: dict, today: date) -> tuple[dict, 
                 "confidence": 0.0, "evidence": [], "error": True}, {"input_tokens": 0, "output_tokens": 0, "web_searches": 0}
 
 
-def analyse_patent(num: str, today: date, on_step: Callable[[str], None] = lambda m: None) -> dict:
-    on_step(f"{num}: reading the public patent record")
-    facts, fact_urls, usage = get_facts(num, today)
-    on_step(f"{num}: rating 7 parameters (“{(facts.get('title') or '')[:60]}”)")
+def analyse_patent(num: str, today: date, on_step: Callable[[str], None] = lambda m: None, use_ai: Optional[bool] = None) -> dict:
+    """1) read the Google Patents record directly (fallback: Claude web fetch), 2) rate 7 parameters with Claude."""
+    from . import google_patents
+    use_ai = configured() if use_ai is None else use_ai
+    usage = {"input_tokens": 0, "output_tokens": 0, "web_searches": 0}
+    on_step(f"{num}: reading the Google Patents record")
+    try:
+        facts = google_patents.lookup(num)
+        fact_urls = facts.get("sources") or []
+        on_step(f"{num}: record read - '{(facts.get('title') or '')[:60]}', status {facts.get('status_detail') or facts.get('legal_status')}")
+    except Exception as ex:  # noqa: BLE001
+        if not use_ai:
+            raise ValueError(f"Google Patents record not available ({ex})")
+        on_step(f"{num}: direct read failed ({str(ex)[:80]}); asking Claude to fetch the record")
+        facts, fact_urls, usage = get_facts(num, today)
+        facts["source"] = "claude_web_fetch"
     ratings = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futs = {dim: pool.submit(rate_dimension, dim, num, facts, today) for dim in DIM_PROMPTS}
-        for dim, fut in futs.items():
-            ratings[dim], u = fut.result()
-            for k in usage:
-                usage[k] += u.get(k, 0)
-    return {"number": num, "facts": facts, "fact_urls": fact_urls, "ratings": ratings, "usage": usage, "model": model_name()}
+    if use_ai:
+        on_step(f"{num}: rating 7 parameters with {model_name()}")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = {dim: pool.submit(rate_dimension, dim, num, facts, today) for dim in DIM_PROMPTS}
+            for dim, fut in futs.items():
+                ratings[dim], u = fut.result()
+                for k in usage:
+                    usage[k] += u.get(k, 0)
+        if ratings and all(r.get("error") for r in ratings.values()):
+            on_step(f"{num}: AI assessment failed for all parameters - continuing with record-based ratings only")
+    else:
+        on_step(f"{num}: record-based ratings only (commercial, strategic and licensing need AI or your inputs)")
+    return {"number": num, "facts": facts, "fact_urls": fact_urls, "ratings": ratings, "usage": usage,
+            "model": model_name() if use_ai else None}
 
 
 # ------------------------------------------------------------------ to the scoring engine
@@ -380,13 +438,23 @@ def to_asset(result: dict, entity_size: str, as_of: date) -> dict:
     size = entity_size if entity_size in ("large", "small", "micro") else (es if es in ("large", "small", "micro") else "large")
     owner = f.get("current_assignee") or None
     now_dt = __import__("datetime").datetime.combine(as_of, __import__("datetime").datetime.min.time())
-    ai_ratings = {d: {k: v for k, v in r.items() if k != "evidence"} for d, r in result["ratings"].items()}
+    ai_ratings = {d: {k: v for k, v in r.items() if k != "evidence"} for d, r in result["ratings"].items() if not r.get("error")}
+    pub_d = _date(f.get("publication_date")) or grant or filing
+    years_out = max(0.5, (as_of - pub_d).days / 365.25) if pub_d else 3
+    from .catalog import TECH
+    trend = None
+    for t in TECH.values():
+        for code, (_lbl, tr) in t["cpc"].items():
+            if f.get("cpc_main") and f["cpc_main"].split("/")[0] == code.split("/")[0]:
+                trend = tr
     signals = {
         "independent_claims": _int(f.get("independent_claims")), "total_claims": _int(f.get("total_claims")),
         "claim1_words": _int(f.get("claim1_word_count")), "forward_citations": _int(f.get("forward_citations")),
         "competitor_names": (f.get("top_citing_assignees") or [])[:6], "competitor_citations": len(f.get("top_citing_assignees") or []),
+        "cohort_citation_median": max(1, int(round(years_out * 1.0))), "tech_trend_growth": trend,
+        "legal_events": f.get("legal_events") or [], "data_source": f.get("source"),
         "maintenance_fee_events": f.get("maintenance_fee_events") or [], "status_detail": f.get("status_detail"),
-        "claim1_summary": f.get("claim1_summary"), "ai_ratings": ai_ratings, "ai_model": result.get("model"),
+        "claim1_summary": f.get("claim1_summary"), "ai_ratings": ai_ratings or None, "ai_model": result.get("model"),
         "ai_usage": result.get("usage"), "expected_remaining_office_actions": 1.5 if status == "pending" else 0,
     }
     obligations = []
@@ -394,7 +462,12 @@ def to_asset(result: dict, entity_size: str, as_of: date) -> dict:
         if re.search(r"litigat|lawsuit|infring|inter partes|IPR|PTAB", str(m), re.I):
             obligations.append({"type": "litigation", "detail": str(m)[:200]})
             break
-    evidence = [{"dimension": "claim_quality", "evidence_type": "patent_record", "source_name": "Google Patents / USPTO record (live)",
+    src_name = "Google Patents record (read directly)" if f.get("source") == "google_patents" else "Google Patents / USPTO record (via Claude web fetch)"
+    evidence = [{"dimension": "competitive", "evidence_type": "citations", "source_name": src_name,
+                 "source_uri": (result.get("fact_urls") or google_urls(num))[0], "source_date": as_of,
+                 "excerpt": f"{f.get('forward_citations')} forward citations; most-citing assignees: {', '.join((f.get('top_citing_assignees') or [])[:3]) or 'none'}.",
+                 "reliability": 0.95, "directness": 0.6, "polarity": 0},
+                {"dimension": "claim_quality", "evidence_type": "patent_record", "source_name": src_name,
                  "source_uri": (result.get("fact_urls") or google_urls(num))[0], "source_date": grant or filing,
                  "excerpt": f"{f.get('independent_claims')} independent / {f.get('total_claims')} total claims; status {f.get('status_detail') or status}.",
                  "reliability": 0.95, "directness": 0.85, "polarity": 0}]

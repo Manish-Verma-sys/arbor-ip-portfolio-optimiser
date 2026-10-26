@@ -280,6 +280,12 @@ def result_row(a: PatentAsset, s: PatentScore, decision: ReviewDecision | None =
         "gate_status": s.gate_status, "gate_codes": [g["code"] for g in s.gate_reasons],
         "cost_3y": totals.get("3", {}).get("total"), "cost_5y": totals.get("5", {}).get("total"),
         "cost_unknown": (s.cost or {}).get("unknown", False),
+        "invested_est": ((s.cost or {}).get("invested") or {}).get("total"),
+        "maintenance_paid": (s.cost or {}).get("maintenance_paid"),
+        "remaining_dues": (s.cost or {}).get("remaining_to_expiry"),
+        "fee_stages": [{"stage": x["stage"], "state": x["state"], "label": x.get("label"), "due_date": x.get("due_date"), "amount": x.get("amount")}
+                       for x in ((s.cost or {}).get("fee_stages") or [])],
+        "status_detail": (a.signals or {}).get("status_detail"),
         "next_deadline": nd["date"] if nd else None, "next_deadline_label": nd["label"] if nd else None,
         "data_as_of": a.data_as_of.isoformat() if a.data_as_of else None,
         "last_status_check": a.last_status_check.isoformat() if a.last_status_check else None,

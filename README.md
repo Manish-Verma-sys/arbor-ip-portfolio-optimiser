@@ -22,6 +22,13 @@ It implements the *Patent Portfolio Optimisation Engine — System Design & Prod
 | API extras | Review-decision, audit and role endpoints remain in the API (spec FR-13/14) but are not shown in the simplified UI. Tenant isolation, escaped rendering, idempotency keys and correlation IDs are kept. |
 
 
+## Asset table money & fee columns
+
+- **Est. invested to date** — attorney drafting/filing, USPTO filing fees, office-action responses, issue fee and maintenance fees already paid (official amounts from versioned USPTO schedules; professional costs are configurable assumptions).
+- **Fees paid** and **Remaining dues to expiry** — maintenance fees already paid, and everything still payable until the patent expires.
+- **3.5 / 7.5 / 11.5-yr fee status** — from grant date, today and legal status, and for live patents the actual fee-payment events on the register (Paid ✓, Due now, Grace, Upcoming, Not paid, —).
+- **Legal status** — Active / Pending / Expired / Lapsed / Abandoned with expiry date.
+
 ## Two pathways
 
 1. **By company** (demo data) — find the owner and rebuild its US portfolio. Filters: filing date range, legal status (active, pending, expired, lapsed, abandoned) and publication type (active, dead, pending). Every parameter is filled in the demo data.
@@ -29,7 +36,7 @@ It implements the *Patent Portfolio Optimisation Engine — System Design & Prod
 
 | Step | Prompt | Tools |
 |---|---|---|
-| Facts | Read the Google Patents record (fallback: USPTO / web search): dates, legal status, anticipated expiry, maintenance-fee events, entity size, CPC, independent claims, claim-1 length, forward citations and citing assignees, family, litigation mentions | web fetch + web search |
+| Facts | The server reads the Google Patents record directly and parses its structured markup (`app/google_patents.py`): dates, legal status, expiry incl. term adjustment, maintenance-fee payment events, entity size, CPC, independent claims, claim-1 length, forward citations and citing assignees, family. Claude's web fetch is only a fallback if the direct read fails | none (direct HTTP) |
 | Commercial | Current products of the owner practising the claims; virtual patent marking pages | web search |
 | Claim quality | Breadth and robustness from the claim facts only | none |
 | Competitive | Citations vs. age/field norms, competitor citations, standards relevance | web search |
@@ -40,7 +47,9 @@ It implements the *Patent Portfolio Optimisation Engine — System Design & Prod
 
 Each parameter prompt has its own 0–5 rubric and returns `{rating, rationale, confidence, evidence[]}` with source URLs. Fetched web content is treated as untrusted data. Fees, the weighted score and the outcome are then computed deterministically by `costs.py` and `scoring.py`. Prompts live in `app/ai.py`.
 
-Configuration: `ANTHROPIC_API_KEY` (required for pathway 2), `ANTHROPIC_MODEL` (default `claude-sonnet-5-5`). Up to 20 patents per run; roughly one minute per patent.
+Without `ANTHROPIC_API_KEY` the patent pathway still works in record-only mode (commercial, strategic and licensing stay unknown). `POST /v1/ai/test` checks the key.
+
+Configuration: `ANTHROPIC_API_KEY` (optional, enables AI ratings), `ANTHROPIC_MODEL` (default `claude-sonnet-5-5`). Up to 20 patents per run; roughly one minute per patent.
 
 ## Data
 
@@ -57,7 +66,7 @@ A live USPTO/EPO/aggregator connector plugs in behind the same pipeline once dat
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 # open http://localhost:8000
-pytest -q   # 21 tests (live pathway tested with a fake Claude client): formula, outcomes, fee engine, checks, permissions, tenant isolation, scenarios, exports, import
+pytest -q   # 26 tests (Google Patents parser tested on real page markup; Claude calls faked): formula, outcomes, fee engine, checks, permissions, tenant isolation, scenarios, exports, import
 ```
 
 Environment variables: `DATABASE_URL` (Postgres; default SQLite), `SQLITE_PATH`, `JOB_STEP_DELAY` (seconds per discovery stage, default 0.6).
