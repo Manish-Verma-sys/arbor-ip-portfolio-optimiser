@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Arbor IP — Patent Portfolio Optimisation</title>
+  <meta name="description" content="Explainable recommendations on which patents to retain, monitor, review or consider abandoning." />
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/app.css?v=1" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/" aria-label="Arbor IP home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+          <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00A39A"/><stop offset="1" stop-color="#005376"/></linearGradient></defs>
+          <rect x="1" y="1" width="38" height="38" rx="11" fill="url(#bg)"/>
+          <path d="M20 31V18M20 23l-6-5M20 21l6-6M14 18l-3-3M26 15l3-1M20 18v-6" stroke="#FFFAED" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+          <circle cx="11" cy="15" r="2.2" fill="#FFFAED"/><circle cx="29.3" cy="13.8" r="2.2" fill="#E1B995"/><circle cx="20" cy="11" r="2.2" fill="#FFFAED"/>
+        </svg>
+        <span class="brand-word">Arbor<span>IP</span></span>
+      </a>
+      <button class="nav-toggle" aria-expanded="false" aria-controls="nav" id="navToggle"><span></span><span></span><span></span><span class="sr">Menu</span></button>
+      <nav id="nav" class="nav" aria-label="Primary">
+        <a href="#/portfolios" data-nav="portfolios">Portfolios</a>
+        <a href="#/reviews" data-nav="reviews">Review queue</a>
+        <a href="#/audit" data-nav="audit">Audit trail</a>
+        <a href="#/settings" data-nav="settings">Model &amp; costs</a>
+      </nav>
+      <div class="top-actions">
+        <label class="who">
+          <span class="sr">Acting as</span>
+          <select id="identity" aria-label="Acting as (demo identity)"></select>
+        </label>
+        <a class="btn btn-teal btn-sm" href="#/">New search</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1"></main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div>
+        <div class="brand-word sm">Arbor<span>IP</span></div>
+        <p class="muted small" id="disclaimer"></p>
+      </div>
+      <div class="small muted footer-meta" id="footMeta"></div>
+    </div>
+  </footer>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button class="modal-x" aria-label="Close" data-close>&times;</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+  <script src="/static/app.js?v=1"></script>
+</body>
+</html>
