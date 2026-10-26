@@ -251,7 +251,7 @@ def parse(html: str, requested: str = "") -> dict:
         "claim1_full": " ".join(claim1.split()[:400]),
         "independent_claims_text": [" ".join(c["text"].split()[:90]) for c in claims_list if c["independent"]][:5],
         "dependent_claims_text": [" ".join(c["text"].split()[:40]) for c in claims_list if not c["independent"]][:10],
-        "citing_documents": citing_docs[:25], "foreign_family": foreign[:15],
+        "citing_documents": citing_docs[:80], "foreign_family": foreign[:15],
         "independent_claims": indep, "total_claims": total_claims, "claim1_word_count": claim1_words,
         "claim1_summary": " ".join(claim1.split()[:45]) + ("…" if claim1 and len(claim1.split()) > 45 else ""),
         "forward_citations": len(fwd), "top_citing_assignees": [a for a, _ in citers.most_common(6)],

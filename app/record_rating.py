@@ -59,13 +59,18 @@ def signals(f: dict, as_of: date) -> dict:
     grant, pub = _d(f.get("grant_date")), _d(f.get("publication_date")) or _d(f.get("grant_date")) or _d(f.get("filing_date"))
     exp = _d(f.get("anticipated_expiration"))
     docs = f.get("citing_documents") or []
-    third, self_cites = {}, 0
+    third, self_cites, foreign_script = {}, 0, 0
     for d in docs:
         a = d.get("assignee") or ""
         if not a:
             continue
         if ok and ok in _key(a):
             self_cites += 1
+            continue
+        if not re.search(r"[A-Za-z]{2}", a):
+            # CJK/Hangul assignee names come from foreign family members of the same citing companies;
+            # count the citation but do not treat the translated name as a separate company.
+            foreign_script += 1
             continue
         third.setdefault(_clean(a), []).append(d)
     recent_cut = date(as_of.year - 5, as_of.month, min(as_of.day, 28))
@@ -88,7 +93,7 @@ def signals(f: dict, as_of: date) -> dict:
         "owner": _clean(owner) or "the owner", "title": f.get("title") or "", "cpc": f.get("cpc_main") or "",
         "cpc_desc": f.get("cpc_description") or "", "status": f.get("legal_status"), "grant": grant, "exp": exp,
         "years_left": years_left, "years_out": years_out, "n_cites": n, "rate": (n / years_out) if (years_out and n is not None) else None,
-        "third": third, "n_third": len(third), "recent_third": recent_third, "self_cites": self_cites, "recent": len(recent), "docs": docs,
+        "third": third, "n_third": len(third), "recent_third": recent_third, "foreign_script": foreign_script, "self_cites": self_cites, "recent": len(recent), "docs": docs,
         "recent_share": (len(recent) / len(docs)) if docs else 0.0, "fee_years": fee_years, "last_fee": last_fee,
         "foreign": foreign, "countries": countries, "continuations": bool(f.get("has_continuations")),
         "continuation_of": f.get("continuation_of"), "indep": f.get("independent_claims"), "total": f.get("total_claims"),
@@ -108,7 +113,8 @@ def _example(third: dict) -> str:
     for name, docs in ranked:
         d = docs[0]
         if d.get("title"):
-            return f"{name}'s {d['pub']} “{d['title'][:70]}” ({(d.get('published') or '')[:4]})"
+            t = d["title"] if len(d["title"]) <= 95 else d["title"][:92].rsplit(" ", 1)[0] + "…"
+            return f"{name}'s {d['pub']} “{t}” ({(d.get('published') or '')[:4]})"
     return ""
 
 
@@ -167,7 +173,8 @@ def competitive(s: dict) -> dict:
                  f"Later filers had to distinguish their inventions from this patent's approach ({s['cpc_desc'] or s['cpc']}). Citations by companies active in the same products indicate the claimed technique sits in a contested design space.",
                  [f"Third-party citers: {names}." if names else "No third-party citers identified.",
                   f"Example: {_example(s['third'])}." if s["third"] else "",
-                  f"{s['recent']} of {len(s['docs'])} citing documents were published in the last 5 years — the field is still active." if s["docs"] else "",
+                  (f"{s['recent']} of {len(s['docs'])} citing documents were published in the last 5 years" + (" — the field is still active." if s["recent_share"] >= 0.4 else ".")) if s["docs"] else "",
+                  f"Plus {s['foreign_script']} citation(s) from those companies' Chinese/Japanese/Korean family filings." if s["foreign_script"] else "",
                   f"{s['self_cites']} citation(s) are the owner's own follow-on filings." if s["self_cites"] else ""],
                  "No standards declaration or verified product use found in the record — citations show relevance, not use.",
                  "Citation rate is above what is typical for a patent of this age." if rate and rate >= 1.5 else "Some external citation activity exists.",

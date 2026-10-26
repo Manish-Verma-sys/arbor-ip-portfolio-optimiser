@@ -322,3 +322,14 @@ def test_structured_ai_rating_reaches_hover(monkeypatch):
             assert all(v == 4 for v in row["ratings"].values())
     finally:
         ai._client_factory = None
+
+
+def test_foreign_script_aliases_not_counted_as_extra_companies():
+    from datetime import date
+    from app.record_rating import signals
+    docs = [{"pub": f"US1100000{i}B2", "assignee": "Apple Inc.", "published": "2024-01-01", "title": "x"} for i in range(3)]
+    docs += [{"pub": "CN1A", "assignee": "苹果公司", "published": "2024-01-01", "title": "x"},
+             {"pub": "KR1A", "assignee": "애플 인크.", "published": "2024-01-01", "title": "x"},
+             {"pub": "US2B2", "assignee": "Google LLC", "published": "2024-01-01", "title": "x"}]
+    s = signals({"current_assignee": "Google LLC", "citing_documents": docs, "forward_citations": 6}, date(2026, 10, 27))
+    assert s["n_third"] == 1 and list(s["third"]) == ["Apple"] and s["foreign_script"] == 2 and s["self_cites"] == 1
