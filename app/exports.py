@@ -10,9 +10,9 @@ from .scoring import DIM_LABEL
 
 COLUMNS = [
     ("publication_number", "Publication"), ("title", "Title"), ("jurisdiction", "Jur."), ("status", "Status"),
-    ("relationship_type", "Relationship"), ("current_owner", "Current owner"), ("strategic_score", "Score"),
+    ("grant_date", "Granted on"), ("relationship_type", "Relationship"), ("current_owner", "Current owner"), ("strategic_score", "Score"),
     ("data_coverage", "Coverage %"), ("evidence_confidence", "Confidence %"), ("recommendation_label", "Recommendation"),
-    ("review_reason_label", "Why review"), ("gate_status", "Checks"), ("gate_codes", "Check details"),
+    ("review_reason_label", "Why review"),
     ("invested_est", "Est. invested to date (USD)"), ("maintenance_paid", "Maintenance fees paid (USD)"),
     ("remaining_dues", "Remaining dues to expiry (USD)"), ("fee:3.5", "3.5-yr fee"), ("fee:7.5", "7.5-yr fee"), ("fee:11.5", "11.5-yr fee"),
     ("cost_3y", "Fwd cost 3y (USD)"), ("cost_5y", "Fwd cost 5y (USD)"),

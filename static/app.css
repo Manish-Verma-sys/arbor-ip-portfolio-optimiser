@@ -535,3 +535,10 @@ div.f { margin-bottom: 12px; }
 #rhbox .rh-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 #rhbox .rh-foot { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line-2); font-size: 11px; color: var(--ink-2); }
 @media (max-width: 560px) { #rhbox .rh-two { grid-template-columns: 1fr; } }
+
+/* v1.5: frozen header row on the assets table (the wrapper scrolls both ways, so sticky top works) */
+.assets-wrap { max-height: calc(100vh - 150px); overflow: auto; border: 1px solid var(--line-2); }
+.assets-t thead th { position: sticky; top: 0; z-index: 2; background: #fbfcfc; box-shadow: inset 0 -1px 0 var(--line); }
+.assets-t thead th.dimh { background: #f6fbfb; }
+.assets-t thead th.stick { left: 0; z-index: 4; }
+.assets-t td.stick { z-index: 1; }

@@ -708,10 +708,8 @@ async function tabAssets(p, runId) {
     <div class="filters" id="flt">
       <label>Search<input class="input" name="q" placeholder="Publication, title, owner" value="${esc(f.q || "")}"></label>
       <div class="flt"><span>Outcome</span>${msel("recommendation", REC_ORDER.map((k) => [k, recLabel(k)]), f.recommendation, "All outcomes")}</div>
-      <div class="flt"><span>Review reason</span>${msel("reason", Object.entries(REASON_SHORT), f.reason, "Any reason")}</div>
       <div class="flt"><span>Status</span>${msel("status", [["active", "Active"], ["pending", "Pending"], ["expired", "Expired"], ["lapsed", "Lapsed"], ["abandoned", "Abandoned"]], f.status, "Any status")}</div>
       <div class="flt"><span>Next fee due</span>${msel("due", [["0-90", "Within 90 days"], ["91-180", "91–180 days"], ["181-365", "181–365 days"], ["366-1095", "1–3 years"], ["1096-99999", "Later than 3 years"], ["none", "No fee due"]], f.due, "Any time")}</div>
-      <div class="flt"><span>Checks</span>${msel("gate", [["PASS", "PASS"], ["REVIEW", "REVIEW"], ["BLOCK", "BLOCK"]], f.gate, "Any")}</div>
       <button class="btn btn-quiet btn-sm" id="clr" type="button">Clear</button>
       <span style="flex:1"></span>
       <div class="btn-row">${["csv", "xlsx", "pdf"].map((x) => `<button class="btn btn-ghost btn-xs" data-exp="${x}" type="button">${x.toUpperCase()}</button>`).join("")}</div>
@@ -739,8 +737,8 @@ async function tabAssets(p, runId) {
     const has = (k) => Array.isArray(f[k]) && f[k].length;
     const q = (f.q || "").toLowerCase();
     let items = res.items.filter((r) => (!q || (r.publication_number + " " + r.title + " " + (r.current_owner || "")).toLowerCase().includes(q))
-      && (!has("recommendation") || f.recommendation.includes(r.recommendation)) && (!has("reason") || f.reason.includes(r.review_reason))
-      && (!has("status") || f.status.includes(r.status)) && (!has("gate") || f.gate.includes(r.gate_status)) && (!has("due") || inDue(r, f.due)));
+      && (!has("recommendation") || f.recommendation.includes(r.recommendation))
+      && (!has("status") || f.status.includes(r.status)) && (!has("due") || inDue(r, f.due)));
     const key = f.sort, dir = f.order === "asc" ? 1 : -1;
     const val = (r) => (["cost_5y", "invested_est", "maintenance_paid", "remaining_dues"].includes(key) ? (r[key] === null || r[key] === undefined ? null : Number(r[key])) : key.startsWith("dim:") ? r.ratings?.[key.slice(4)] : r[key]);
     items = items.slice().sort((x, y) => { const a = val(x), b = val(y); if (a === null || a === undefined) return 1; if (b === null || b === undefined) return -1; return (a > b ? 1 : a < b ? -1 : 0) * dir; });
@@ -748,10 +746,10 @@ async function tabAssets(p, runId) {
     if (f.page > pages) f.page = pages;
     const pageItems = items.slice((f.page - 1) * ps, f.page * ps);
     const th = (k, l, cls = "", tk = null) => `<th class="${cls}"><span class="thw"><button data-sort="${k}">${l} ${f.sort === k ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button>${tk ? tip(tk) : ""}</span></th>`;
-    $("#tbl").innerHTML = items.length ? `<div class="table-wrap"><table class="t assets-t"><thead>
-      <tr>${th("publication_number", "Publication no.", "stick", null)}${th("title", "Title", "", null)}${th("status", "Legal status", "", null)}${th("strategic_score", "Score", "", null)}
+    $("#tbl").innerHTML = items.length ? `<div class="table-wrap assets-wrap"><table class="t assets-t"><thead>
+      <tr>${th("publication_number", "Publication no.", "stick", null)}${th("title", "Title", "", null)}${th("status", "Legal status", "", null)}${th("grant_date", "Granted on", "", null)}${th("strategic_score", "Score", "", null)}
       ${dims.map((d) => `<th class="dimh" title="${esc(d.label)}"><span class="thw"><button data-sort="dim:${d.key}">${esc(DIM_SHORT[d.key])} ${f.sort === "dim:" + d.key ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button></span></th>`).join("")}
-      ${th("recommendation", "Outcome", "", null)}<th>Checks</th>
+      ${th("recommendation", "Outcome", "", null)}
       ${th("invested_est", "Invested to date ($)", "num", null)}${th("maintenance_paid", "Fees paid ($)", "num", null)}${th("remaining_dues", "Remaining dues ($)", "num", null)}
       <th class="center">3.5-yr fee</th><th class="center">7.5-yr fee</th><th class="center">11.5-yr fee</th>
       ${th("next_deadline", "Next fee due", "", null)}${th("data_coverage", "Coverage", "num", null)}</tr></thead>
@@ -759,9 +757,10 @@ async function tabAssets(p, runId) {
         <td class="nowrap stick"><a class="pub" href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.publication_number)}</a>${r.relationship_type !== "original" ? `<div class="xsmall muted">${esc(r.relationship_type)}</div>` : ""}</td>
         <td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.title)}</a></td>
         <td class="nowrap">${legalCell(r)}</td>
+        <td class="nowrap small">${r.grant_date ? fmtDate(r.grant_date) : '<span class="muted">Not granted</span>'}</td>
         <td>${r.strategic_score === null ? '<span class="unknown">n/a</span>' : `<div class="scorecell"><b>${r.strategic_score.toFixed(0)}</b><div class="bar" style="width:48px"><i style="width:${r.strategic_score}%"></i></div></div>`}</td>
         ${dims.map((d) => `<td class="center">${ratingChip(r.ratings?.[d.key], r.dimension_details?.[d.key] || {}, d.key)}</td>`).join("")}
-        <td>${recCell(r)}</td><td>${gatePill(r.gate_status)}</td>
+        <td>${recCell(r)}</td>
         <td class="num">${fmtMoney(r.invested_est)}</td>
         <td class="num">${fmtMoney(r.maintenance_paid)}</td>
         <td class="num"><b>${fmtMoney(r.remaining_dues, r.cost_unknown)}</b></td>
@@ -931,7 +930,6 @@ function recCard(sc, run, d) {
       <div class="metric-row">
         <div class="metric"><div class="lbl">Data coverage ${tip("coverage")}</div><div class="val">${sc.data_coverage.toFixed(0)}%</div><div class="bar ${barCls(sc.data_coverage)}"><i style="width:${sc.data_coverage}%"></i></div></div>
         <div class="metric"><div class="lbl">Evidence confidence ${tip("confidence")}</div><div class="val">${sc.evidence_confidence.toFixed(0)}%</div><div class="bar ${barCls(sc.evidence_confidence)}"><i style="width:${sc.evidence_confidence}%"></i></div></div>
-        <div class="metric"><div class="lbl">Checks ${tip("checks")}</div><div class="val">${gatePill(sc.gate_status)}</div></div>
       </div></div></div>
     ${sc.data_coverage < t.coverage_min ? `<div class="callout callout-cream" style="margin-top:12px">${ICON.info}<div>Only ${sc.data_coverage.toFixed(0)}% of the scoring weight has evidence, so this patent can't be confidently called Retain or Abandon yet. Missing parameters are left out, not counted as zero — add the inputs listed below.</div></div>` : ""}
     ${(ex.confidence_notes || []).length ? `<p class="xsmall muted" style="margin-top:10px">Confidence adjustments: ${ex.confidence_notes.map(esc).join("; ")}</p>` : ""}
