@@ -1,6 +1,6 @@
-# Arbor IP — Patent Portfolio Optimisation Engine
+# Portfolio Maintenance Calculator
 
-Arbor IP is a decision-support web app that helps corporate IP teams decide which patents to **retain, monitor, send to strategic review, or consider for abandonment** — with every recommendation explained, costed and gated for human review.
+A decision-support web app that tells IP teams, for every patent, whether to **Retain**, **Review** or **Abandon** (or that it is **Not in force – review family**) — with the score, each parameter's rating, the cost of keeping it and the reason.
 
 > **Decision support only.** Scores are not legal advice or a valuation. The system never abandons, pays or files anything; every consequential action needs an authorised person.
 
@@ -14,12 +14,12 @@ It implements the *Patent Portfolio Optimisation Engine — System Design & Prod
 | Portfolio reconstruction (FR-03/04/05) | Applications, grants, continuations, EP/CN counterparts, families, ownership timeline separating inventor / original applicant / recorded assignee / current owner. |
 | Seven-dimension scoring (FR-07) | Ratings 0–5 or **UNKNOWN**; `Score = 100 × Σ(Wᵢ·Rᵢ/5) ÷ Σ(Wᵢ)` over known dimensions; data coverage and evidence confidence computed separately. |
 | Cost engine (FR-08) | Deterministic USPTO maintenance fees from versioned schedules (Oct 2020 and Jan 2025), grace-period surcharges, entity size, plus configurable professional costs; non-US is UNKNOWN rather than zero; actual (sunk) costs shown separately. |
-| Recommendations & hard gates (FR-09/10) | Ownership unresolved / status conflict → **BLOCK**; pending prosecution, not in force, imminent deadline, grace period, obligations, stale status → **REVIEW**; family/jurisdiction dependency warnings; low coverage → *insufficient evidence*. |
+| Outcomes & checks (FR-09/10) | Four outcomes only: **Retain** (score ≥ 65), **Review** (45–64, or a reason to check first), **Abandon** (< 45), **Not in force – review family**. Review always carries one reason: borderline value, needs more evidence (coverage < 70% / confidence < 50%), data conflict (ownership/status), pending application, legal obligation, or family dependency. Low scores on pending, obligated or parent-of-continuation assets never become Abandon. |
 | Explainability (FR-11) | Top positive and negative factors, missing inputs, what could change the result, weight sensitivity, evidence with source/date/reliability, scoring version and data hash. |
 | Scenarios & budget (FR-12) | Weight/threshold sliders with live preview, saved scenario runs that never overwrite the default model, budget-target shortlist (for review only). |
-| Human review & audit (FR-13/14/16) | Accept / reject / override / defer with reason codes; overrides need justification; mandatory pre-decision status recheck; only counsel can approve abandonment-review outcomes; full audit log with before/after hashes. |
+| Explainability in the UI | Assets table shows each of the 7 parameter ratings (0–5 or ?) with its weight, the scoring model and thresholds in use, and ⓘ help on every column, KPI and section. |
 | Exports (FR-15) | CSV, XLSX and PDF with data date, scoring version, weights, assumptions and disclaimer. |
-| Security | Role-based permissions, object-level tenant isolation (a second tenant is seeded to prove it), escaped rendering, idempotency keys, correlation IDs. |
+| API extras | Review-decision, audit and role endpoints remain in the API (spec FR-13/14) but are not shown in the simplified UI. Tenant isolation, escaped rendering, idempotency keys and correlation IDs are kept. |
 
 ## Data
 
@@ -30,17 +30,13 @@ No licensed patent-data provider is configured, so the app ships with:
 
 A live USPTO/EPO/aggregator connector plugs in behind the same pipeline once data licences are confirmed (spec §18).
 
-## Demo identities
-
-Switch identity in the header to see permissions change: IP manager, patent counsel, portfolio analyst, finance partner, tenant admin, read-only viewer, and a user in a separate tenant.
-
 ## Run locally
 
 ```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 # open http://localhost:8000
-pytest -q   # 15 tests: formula, fee engine, gates, permissions, tenant isolation, scenarios, exports, import
+pytest -q   # 16 tests: formula, outcomes, fee engine, checks, permissions, tenant isolation, scenarios, exports, import
 ```
 
 Environment variables: `DATABASE_URL` (Postgres; default SQLite), `SQLITE_PATH`, `JOB_STEP_DELAY` (seconds per discovery stage, default 0.6).

@@ -185,6 +185,18 @@ def _build(r, owner, tech_key, n_fam, as_of, customer_data, subs, inventor_focus
                            inventors, original_applicant, owner, sub, as_of, customer_data, standards, fi, source=src)
                 a["family_idx"] = fi
                 fam_assets.append(a)
+        # Business inputs describe the invention, so foreign counterparts inherit them from the US parent
+        parent = fam_assets[0]
+        if parent.get("product_mappings") is not None or parent.get("customer_inputs"):
+            for m in fam_assets[1:]:
+                if m["jurisdiction"] == "US":
+                    continue
+                m["product_mappings"] = [dict(x) for x in (parent["product_mappings"] or [])] if parent["product_mappings"] is not None else None
+                m["customer_inputs"] = dict(parent["customer_inputs"])
+                m["signals"]["licensing_history"] = parent["signals"].get("licensing_history")
+                for e in parent["evidence"]:
+                    if e["dimension"] in ("commercial", "strategic", "licensing") and e["evidence_type"] in ("product_mapping", "strategy_tag", "licensing_register"):
+                        m["evidence"].append({**e, "source_name": e["source_name"] + " (inherited from US family member)", "directness": round(e["directness"] * 0.85, 2)})
         # special cases
         if fi == special["conflict"]:
             us = fam_assets[0]

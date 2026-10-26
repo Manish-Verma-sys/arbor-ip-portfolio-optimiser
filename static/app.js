@@ -1,16 +1,89 @@
-/* Arbor IP — single-page app (no framework). All server data is escaped before rendering. */
+/* Portfolio Maintenance Calculator — single-page app (no framework). All server data is escaped before rendering. */
 "use strict";
 
-const S = { meta: null, me: null, uid: localStorage.getItem("arbor_uid") || "u_ipm", pf: {}, filters: {}, scen: {}, poll: null };
+const S = { meta: null, me: null, uid: "u_admin", pf: {}, filters: {}, scen: {}, poll: null };
 const $ = (q, el = document) => el.querySelector(q);
 const $$ = (q, el = document) => [...el.querySelectorAll(q)];
 const main = () => $("#main");
 
-const REC_COLORS = {
-  strong_retain: "#005376", retain_monitor: "#00A39A", strategic_review: "#D9A46F",
-  abandonment_review_candidate: "#B5523B", insufficient_evidence: "#8F9BA3", blocked: "#3D3D3D", not_in_force: "#C6CCD0",
+const REC_COLORS = { retain: "#00A39A", review: "#D9A46F", abandon: "#B5523B", not_in_force: "#B8C0C5" };
+const REC_ORDER = ["retain", "review", "abandon", "not_in_force"];
+const REC_SHORT = {
+  retain: "Keep paying fees — value justifies cost",
+  review: "Needs a human look before the next fee",
+  abandon: "Low value for its cost — candidate to let lapse",
+  not_in_force: "Already expired / lapsed — check family",
 };
-const REC_ORDER = ["strong_retain", "retain_monitor", "strategic_review", "abandonment_review_candidate", "insufficient_evidence", "not_in_force", "blocked"];
+const REASON_SHORT = {
+  borderline_value: "Borderline value", insufficient_evidence: "Needs more evidence", data_conflict: "Data conflict",
+  pending_application: "Pending application", obligation: "Legal obligation", family_dependency: "Family dependency",
+};
+const DIM_SHORT = { commercial: "Commercial", claim_quality: "Claims", competitive: "Competitive", strategic: "Strategic",
+  portfolio: "Portfolio", licensing: "Licensing", future: "Future" };
+const DIM_HELP = {
+  commercial: "Is the patent used in a product today? Rated from your product mapping: product lifecycle, revenue band and confirmed use.",
+  claim_quality: "How strong and broad the claims are: number of independent claims, length of claim 1, narrowing during prosecution and RCEs.",
+  competitive: "Market relevance: forward citations compared with similar patents, citations by competitors and standards relevance (needs at least 2 signals).",
+  strategic: "Your business strategy tag (core / defensive / non-core) plus freedom-to-operate and roadmap relevance.",
+  portfolio: "How unique the patent is in your portfolio: other live patents in the same technology, and family dependencies.",
+  licensing: "Licensing history and evidence-of-use leads that suggest licensing or enforcement potential.",
+  future: "Growth of patent filings in this technology area and how many years of term remain.",
+};
+const GLOSS = {
+  score: "Value score (0–100): the weighted average of the 7 parameter ratings, using only parameters that have evidence. Higher means more worth keeping.",
+  rating: "Each parameter is rated 0–5 (0 = evidence of very low relevance, 5 = critical). '?' means UNKNOWN — not enough evidence; it is left out of the score, not counted as zero.",
+  coverage: "Data coverage: the share of the scoring weight that has enough evidence. 75% means parameters worth 75 of the 100 weight points were rated. Below the minimum (default 70%) the outcome is Review – needs more evidence.",
+  confidence: "Evidence confidence: how reliable, recent and direct the evidence is (official registers score high, unverified leads low). Below the minimum (default 50%) the outcome is Review.",
+  outcome: "Retain: score at or above the retain threshold (default 65) — keep paying fees. Review: borderline score (45–64) or something needs checking first (missing evidence, data conflict, pending application, legal obligation). Abandon: score below 45 — low value for its cost; candidate to let lapse after confirmation. Not in force: already expired, lapsed or abandoned.",
+  checks: "Automatic checks on ownership, legal status, fee deadlines and obligations. PASS = nothing found. REVIEW = something to verify (e.g. fee due soon). BLOCK = ownership or legal-status conflict that must be fixed before relying on the outcome.",
+  cost5: "Forward cost over the next 5 years: official USPTO maintenance fees (19 Jan 2025 schedule, by entity size) plus estimated annuity-service / attorney costs. UNKNOWN for non-US members because no fee schedule is configured for them.",
+  cost3: "Forward cost over the next 3 years: official USPTO maintenance fees plus estimated professional costs.",
+  deadline: "Next maintenance-fee due date (3.5, 7.5 or 11.5 years after grant). The fee window opens 6 months earlier; a 6-month grace period follows with a surcharge, after which the patent lapses.",
+  status: "Legal status: active (in force), pending (application not yet granted), expired (end of term), lapsed (fee not paid), abandoned.",
+  asset: "Publication number, title and relationship in the family: original filing, continuation (US follow-on application) or foreign counterpart (same invention in another country).",
+  jurisdiction: "Patent office: US (USPTO), EP (European Patent Office) or CN (China).",
+  weight: "Weight: how much each parameter counts in the score. All weights add up to 100.",
+  families: "A patent family is the set of applications that share a priority filing — the same invention filed as continuations or in other countries.",
+  inforce: "In force = granted and active. Pending = applications still being examined.",
+  coverage_kpi: "Average data coverage across all assets, and average evidence confidence. Add business inputs to raise both.",
+  issues: "Assets with a blocking data issue (ownership or status conflict) · assets whose legal status has not been rechecked recently.",
+  model: "The scoring model is the set of parameter weights and thresholds used to turn ratings into a score and an outcome. Change it on the Scoring model page, or try alternatives in Scenarios without changing the default.",
+  attention: "Assets with a fee due within the warning window, a fee in its grace period, or a data conflict to resolve.",
+  costyear: "Total forecast spend per calendar year: official fees plus estimated professional costs.",
+  scatter: "Each dot is an asset: further right = more expensive to keep, higher = more valuable. Bottom-right dots are the strongest candidates to drop.",
+};
+function tip(key, text) {
+  const t = text || GLOSS[key] || DIM_HELP[key] || "";
+  return `<button type="button" class="ibtn" data-tip="${esc(t)}" aria-label="What does this mean? ${esc(t)}">i</button>`;
+}
+function initTips() {
+  const box = document.createElement("div");
+  box.id = "tipbox"; box.setAttribute("role", "tooltip"); box.hidden = true;
+  document.body.appendChild(box);
+  let pinned = null;
+  const show = (el) => {
+    box.textContent = el.dataset.tip; box.hidden = false;
+    const r = el.getBoundingClientRect(); const bw = Math.min(320, window.innerWidth - 24);
+    box.style.maxWidth = bw + "px";
+    let left = Math.min(Math.max(12, r.left + r.width / 2 - bw / 2), window.innerWidth - bw - 12);
+    box.style.left = left + window.scrollX + "px";
+    const below = r.bottom + 8 + box.offsetHeight < window.innerHeight;
+    box.style.top = (below ? r.bottom + 8 : r.top - box.offsetHeight - 8) + window.scrollY + "px";
+  };
+  const hide = () => { if (!pinned) box.hidden = true; };
+  document.addEventListener("mouseover", (e) => { const b = e.target.closest(".ibtn"); if (b) show(b); });
+  document.addEventListener("mouseout", (e) => { if (e.target.closest(".ibtn")) hide(); });
+  document.addEventListener("focusin", (e) => { const b = e.target.closest(".ibtn"); if (b) show(b); });
+  document.addEventListener("focusout", (e) => { if (e.target.closest(".ibtn")) { pinned = null; hide(); } });
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".ibtn");
+    if (b) { e.preventDefault(); e.stopPropagation(); pinned = pinned === b ? null : b; pinned ? show(b) : (box.hidden = true); return; }
+    if (pinned) { pinned = null; box.hidden = true; }
+  }, true);
+  window.addEventListener("scroll", () => { if (!pinned) box.hidden = true; }, { passive: true });
+  window.addEventListener("hashchange", () => { pinned = null; box.hidden = true; });
+  window.addEventListener("resize", () => { pinned = null; box.hidden = true; });
+}
 const JOB_STEPS = [["CREATED", "Entity confirmed"], ["DISCOVERING", "Discovering applications & grants"], ["NORMALISING", "De-duplicating & grouping families"],
   ["ENRICHING", "Attaching evidence, status & costs"], ["SCORING", "Scoring, gates & recommendations"], ["REVIEW_READY", "Ready for review"]];
 
@@ -26,6 +99,8 @@ const fmtDate = (d) => (d ? new Date(d.length <= 10 ? d + "T00:00:00" : d).toLoc
 const fmtDT = (d) => (d ? new Date(d.endsWith("Z") ? d : d + "Z").toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
 const daysTo = (d) => (d ? Math.round((new Date(d + "T00:00:00") - new Date(new Date().toDateString())) / 86400000) : null);
 const recPill = (k, lbl) => `<span class="rec rec-${esc(k)}"><i aria-hidden="true"></i>${esc(lbl || recLabel(k))}</span>`;
+const recCell = (r) => `${recPill(r.recommendation)}${r.review_reason ? `<div class="xsmall reason">${esc(REASON_SHORT[r.review_reason] || r.review_reason)}</div>` : ""}`;
+const ratingChip = (v) => (v === null || v === undefined ? '<span class="rt rt-u" title="UNKNOWN — not enough evidence">?</span>' : `<span class="rt rt-${v}" title="${v} of 5">${v}</span>`);
 const gatePill = (g) => `<span class="badge gate gate-${esc(g)}">${esc(g)}</span>`;
 const statusTxt = (s) => `<span class="status status-${esc(s)}">${esc(s)}</span>`;
 const modeBadge = (m) => (m === "synthetic" ? '<span class="badge b-syn" title="Fictional demonstration data">SYNTHETIC DEMO DATA</span>' : m === "imported" ? '<span class="badge b-imp">CUSTOMER IMPORT</span>' : `<span class="badge b-mute">${esc(m)}</span>`);
@@ -97,9 +172,6 @@ const routes = [
   [/^\/search\/([\w-]+)$/, viewSearch],
   [/^\/p\/([\w-]+)(?:\/(\w+))?$/, viewPortfolio],
   [/^\/a\/([\w-]+)$/, viewAsset],
-  [/^\/reviews$/, viewReviews],
-  [/^\/batch\/([\w-]+)$/, viewBatch],
-  [/^\/audit$/, viewAudit],
   [/^\/settings$/, viewSettings],
 ];
 function parseHash() {
@@ -127,19 +199,11 @@ window.addEventListener("hashchange", () => { router(); window.scrollTo(0, 0); }
 /* ---------------------------------------------------------------- boot */
 async function boot() {
   $("#navToggle").addEventListener("click", (e) => { const n = $("#nav"); n.classList.toggle("open"); e.currentTarget.setAttribute("aria-expanded", n.classList.contains("open")); });
-  const [meta, ids] = await Promise.all([api("/v1/meta"), api("/v1/demo-identities")]);
+  initTips();
+  const meta = await api("/v1/meta");
   S.meta = meta;
   $("#disclaimer").textContent = meta.disclaimer;
   $("#footMeta").innerHTML = `v${esc(meta.version)} · ${esc(meta.scoring_version)}<br>Synthetic demo entities are fictional.`;
-  const sel = $("#identity");
-  sel.innerHTML = ids.map((u) => `<option value="${esc(u.id)}">${esc(u.name)} — ${esc(u.role_label)}${u.tenant_id !== "tenant_demo" ? " (other tenant)" : ""}</option>`).join("");
-  if (!ids.find((u) => u.id === S.uid)) S.uid = "u_ipm";
-  sel.value = S.uid;
-  sel.addEventListener("change", async () => {
-    S.uid = sel.value; localStorage.setItem("arbor_uid", S.uid);
-    S.me = await api("/v1/me"); toast(`Now acting as ${S.me.name} (${S.me.role_label})`);
-    router();
-  });
   S.me = await api("/v1/me");
   router();
 }
@@ -152,11 +216,11 @@ async function viewHome() {
     <div>
       <div class="eyebrow">Patent portfolio optimisation engine</div>
       <h1>Know which patents to keep, review or let go.</h1>
-      <p class="lead">Search a company or inventor. Arbor rebuilds the portfolio, groups families, forecasts official and professional costs, and scores seven evidence-based dimensions — then shows exactly why each asset is a retain, monitor, review or abandonment-review candidate.</p>
+      <p class="lead">Search a company or inventor. The calculator rebuilds the portfolio, groups families, forecasts official and professional costs, and scores seven evidence-based dimensions — then tells you for each patent whether to <b>Retain</b>, <b>Review</b> or <b>Abandon</b> — and exactly why.</p>
       <div class="principles" style="margin-top:28px">
         <div class="principle"><b>Unknown is not zero</b><span class="small muted">Missing evidence lowers coverage, never the score.</span></div>
         <div class="principle"><b>Explainable</b><span class="small muted">Every rating links to its source, date and rationale.</span></div>
-        <div class="principle"><b>Human decides</b><span class="small muted">Nothing is ever abandoned or paid automatically.</span></div>
+        <div class="principle"><b>You decide</b><span class="small muted">Nothing is ever abandoned or paid automatically.</span></div>
       </div>
     </div>
     <div class="search-card" id="searchCard">
@@ -198,7 +262,7 @@ async function viewHome() {
     <div class="step"><span class="n">01</span><b>Resolve</b><span class="small muted">Candidate entities with match evidence; you confirm.</span></div>
     <div class="step"><span class="n">02</span><b>Reconstruct</b><span class="small muted">Applications, grants, families, ownership timeline.</span></div>
     <div class="step"><span class="n">03</span><b>Score & cost</b><span class="small muted">Seven dimensions, coverage, confidence, 3/5-year cost.</span></div>
-    <div class="step"><span class="n">04</span><b>Review</b><span class="small muted">Gates, scenarios, review batches, audited decisions.</span></div>
+    <div class="step"><span class="n">04</span><b>Decide</b><span class="small muted">Retain, Review or Abandon — with reasons, costs and what-if scenarios.</span></div>
   </div></div></section>
   <section class="wrap page">
     <div class="grid g-side">
@@ -261,10 +325,10 @@ async function viewHome() {
 
 function pfRow(p) {
   const s = p.summary || {};
-  const ab = (s.by_recommendation || {}).abandonment_review_candidate || 0;
+  const br = s.by_recommendation || {};
   return `<a href="#/p/${esc(p.portfolio_id)}" style="display:grid;grid-template-columns:1fr auto;gap:8px;padding:12px 4px;border-bottom:1px solid var(--line-2);text-decoration:none;color:inherit">
     <div><div style="font-family:var(--serif);font-size:18px;color:var(--ocean)">${esc(p.name)}</div>
-      <div class="small muted">${s.assets ?? "—"} assets · ${s.families ?? "—"} families · ${fmtMoney(s.forward_cost?.["5"])} 5-yr forward cost · ${ab} abandonment-review</div></div>
+      <div class="small muted">${s.assets ?? "—"} assets · ${s.families ?? "—"} families · ${fmtMoney(s.forward_cost?.["5"])} 5-yr cost · <span class="rec-retain">${br.retain || 0} retain</span> · ${br.review || 0} review · <span class="rec-abandon">${br.abandon || 0} abandon</span></div></div>
     <div class="right">${modeBadge(p.data_mode)}${p.provisional ? ' <span class="badge b-warn">PROVISIONAL</span>' : ""}<div class="xsmall muted" style="margin-top:4px">${fmtDT(p.latest_run_at)}</div></div></a>`;
 }
 
@@ -381,7 +445,7 @@ async function viewPortfolio(pid, tab = "overview", q) {
   const p = await api(`/v1/portfolios/${pid}`);
   S.pf = p;
   const runId = q.get("run") || p.latest_score_run_id;
-  const tabs = [["overview", "Dashboard"], ["assets", "Assets"], ["families", "Families"], ["scenarios", "Scenarios"], ["reviews", "Reviews"], ["runs", "Score runs"]];
+  const tabs = [["overview", "Dashboard"], ["assets", "Assets"], ["families", "Families"], ["scenarios", "Scenarios"]];
   main().innerHTML = `
   <section class="band"><div class="wrap">
     <div class="eyebrow">${p.query_type === "inventor" ? "Inventor portfolio" : "Company portfolio"} · ${esc(p.ownership_scope.replace(/_/g, " "))}</div>
@@ -396,7 +460,7 @@ async function viewPortfolio(pid, tab = "overview", q) {
     $("#tb").insertAdjacentHTML("beforebegin", `<div class="callout callout-warn" style="margin-top:14px">${ICON.warn}<div><b>Scores are provisional.</b> This inventor view mixes owners. Choose a specific owner from a new search, or confirm that inventor-centric analysis is intended. ${can("search") ? `<button class="btn btn-ghost btn-xs" id="confInv">Confirm inventor-centric analysis</button>` : ""}</div></div>`);
     $("#confInv")?.addEventListener("click", async () => { await api(`/v1/portfolios/${pid}/confirm-inventor-scope`, { method: "POST", body: { inventor_centric_confirmed: true } }); router(); });
   }
-  const fn = { overview: tabOverview, assets: tabAssets, families: tabFamilies, scenarios: tabScenarios, reviews: tabReviews, runs: tabRuns }[tab] || tabOverview;
+  const fn = { overview: tabOverview, assets: tabAssets, families: tabFamilies, scenarios: tabScenarios }[tab] || tabOverview;
   await fn(p, runId, q);
 }
 
@@ -413,47 +477,56 @@ async function tabOverview(p, runId) {
   const rows = res.items;
   const br = s.by_recommendation || {};
   const total = rows.length || 1;
+  const thr = run.config.thresholds;
+  const reasons = {};
+  rows.filter((r) => r.recommendation === "review").forEach((r) => (reasons[r.review_reason] = (reasons[r.review_reason] || 0) + 1));
+  const costOf = (k) => rows.filter((r) => r.recommendation === k).reduce((a, r) => a + Number(r.cost_5y || 0), 0);
   const attention = rows.filter((r) => r.gate_codes.some((g) => ["IN_GRACE_PERIOD", "DEADLINE_IMMINENT", "STATUS_CONFLICT", "OWNERSHIP_UNRESOLVED"].includes(g)))
     .sort((a, b) => (a.next_deadline || "9999").localeCompare(b.next_deadline || "9999"));
-  const insuff = br.insufficient_evidence || 0;
+  const needEv = reasons.insufficient_evidence || 0;
   tb.innerHTML = `
-  <div class="kpis">
-    ${kpi("Patent assets", s.assets, `${s.families} families`, ICON.doc)}
-    ${kpi("In force / pending", `${s.in_force} / ${s.pending}`, `${(br.not_in_force || 0)} not in force`, ICON.fam)}
-    ${kpi("Forward cost · 3 yr", fmtMoney(s.forward_cost["3"]), s.unknown_cost_assets ? `${s.unknown_cost_assets} assets UNKNOWN cost` : "official + professional", ICON.coin)}
-    ${kpi("Forward cost · 5 yr", fmtMoney(s.forward_cost["5"]), "estimates, not actuals", ICON.coin)}
-    ${kpi("Avg data coverage", s.avg_coverage + "%", `avg confidence ${s.avg_confidence}%`, ICON.gauge, s.avg_coverage < 70 ? "warn" : "")}
-    ${kpi("Blocked · stale", `${(s.by_gate || {}).BLOCK || 0} · ${s.stale_records}`, "need resolution / recheck", ICON.alert, ((s.by_gate || {}).BLOCK || s.stale_records) ? "alert" : "")}
+  <div class="outcomes">${REC_ORDER.map((k) => `<div class="outcome oc-${k}" data-rec="${k}" role="button" tabindex="0" aria-label="Show ${esc(recLabel(k))} assets">
+      <div class="oc-top"><span class="oc-name">${esc(recLabel(k))}</span>${tip(null, (S.meta.recommendations.find((x) => x.key === k) || {}).handling)}</div>
+      <div class="oc-n">${br[k] || 0}<span> of ${rows.length}</span></div>
+      <div class="oc-desc">${esc(REC_SHORT[k])}</div>
+      <div class="oc-cost">${k === "not_in_force" ? "&nbsp;" : `5-yr cost ${fmtMoney(costOf(k))}`}</div></div>`).join("")}</div>
+  <div class="stackbar" role="img" aria-label="Outcome distribution" style="margin-top:14px">${REC_ORDER.filter((k) => br[k]).map((k) => `<span style="width:${(br[k] / total) * 100}%;background:${REC_COLORS[k]}" title="${esc(recLabel(k))}: ${br[k]}"></span>`).join("")}</div>
+  ${br.review ? `<div class="card" style="margin-top:4px"><div class="card-head"><h3>Why assets are in Review ${tip(null, "Review always has one reason. Fix the reason and the asset moves to Retain or Abandon.")}</h3><span class="small muted">Retain ≥ ${thr.retain} · Review ${thr.review}–${thr.retain - 1} · Abandon &lt; ${thr.review}</span></div>
+    <div class="reasons">${Object.entries(reasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<button class="reason-row" data-reason="${esc(k)}"><b>${v}</b><span>${esc((S.meta.review_reasons || {})[k] || k)}</span></button>`).join("")}</div>
+    ${needEv && can("inputs") ? `<div class="btn-row" style="margin-top:10px"><button class="btn btn-ghost btn-xs" id="ciUp">Upload business inputs to resolve “needs more evidence”</button></div>` : ""}</div>` : ""}
+  <div class="kpis" style="margin-top:18px">
+    ${kpi("Patent assets", s.assets, `${s.families} families`, ICON.doc, "", "families")}
+    ${kpi("In force / pending", `${s.in_force} / ${s.pending}`, `${(br.not_in_force || 0)} not in force`, ICON.fam, "", "inforce")}
+    ${kpi("Forward cost · 3 yr", fmtMoney(s.forward_cost["3"]), s.unknown_cost_assets ? `${s.unknown_cost_assets} assets UNKNOWN cost` : "official + professional", ICON.coin, "", "cost3")}
+    ${kpi("Forward cost · 5 yr", fmtMoney(s.forward_cost["5"]), "estimates, not actuals", ICON.coin, "", "cost5")}
+    ${kpi("Avg data coverage", s.avg_coverage + "%", `avg confidence ${s.avg_confidence}%`, ICON.gauge, s.avg_coverage < thr.coverage_min ? "warn" : "", "coverage_kpi")}
+    ${kpi("Data issues · stale", `${(s.by_gate || {}).BLOCK || 0} · ${s.stale_records}`, "conflicts · status rechecks", ICON.alert, ((s.by_gate || {}).BLOCK || s.stale_records) ? "alert" : "", "issues")}
   </div>
-  ${insuff ? `<div class="callout callout-cream" style="margin-top:16px">${ICON.info}<div><b>${insuff} asset(s) have insufficient evidence</b> (coverage below ${run.config.thresholds.coverage_min}% or low confidence). They are not scored as low value. Add product mappings and strategy tags to unlock a recommendation. ${can("inputs") ? `<button class="btn btn-ghost btn-xs" id="ciUp">Upload business inputs</button>` : ""}</div></div>` : ""}
   <div class="grid g2" style="margin-top:18px">
-    <div class="card"><div class="card-head"><h3>Recommendations</h3><span class="small muted">${esc(run.config.name)} · ${esc(run.scoring_version)}</span></div>
-      <div class="stackbar" role="img" aria-label="Recommendation distribution">${REC_ORDER.filter((k) => br[k]).map((k) => `<span style="width:${(br[k] / total) * 100}%;background:${REC_COLORS[k]}" title="${esc(recLabel(k))}: ${br[k]}"></span>`).join("")}</div>
-      <div class="legend">${REC_ORDER.map((k) => `<button data-rec="${k}">${recPill(k)}<b>${br[k] || 0}</b></button>`).join("")}</div>
-      <p class="xsmall muted" style="margin-top:10px">Click a category to open the filtered asset list. Recommendations are candidates for human review — never automatic actions.</p></div>
-    <div class="card"><div class="card-head"><h3>Forward cost by year</h3><span class="small muted">USD · official fees + configurable professional costs</span></div>${costChart(s.cost_by_year, run.as_of_date)}</div>
+    <div class="card"><div class="card-head"><h3>Value vs. 5-year cost ${tip("scatter")}</h3><span class="small muted">click a dot to open</span></div>${scatter(rows, thr)}
+      <div class="legend-inline">${REC_ORDER.map((k) => recPill(k)).join("")}</div></div>
+    <div class="card"><div class="card-head"><h3>Forward cost by year ${tip("costyear")}</h3><span class="small muted">USD</span></div>${costChart(s.cost_by_year, run.as_of_date)}</div>
   </div>
   <div class="grid g2" style="margin-top:18px">
-    <div class="card"><div class="card-head"><h3>Value vs. 5-year cost</h3><span class="small muted">each dot is an asset with a score</span></div>${scatter(rows)}</div>
-    <div class="card"><div class="card-head"><h3>Needs attention</h3><span class="small muted">deadlines, grace periods, blocking gates</span></div>
+    <div class="card"><div class="card-head"><h3>Needs attention ${tip("attention")}</h3><span class="small muted">deadlines & data issues</span></div>
       ${attention.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Asset</th><th>Issue</th><th>Date</th></tr></thead><tbody>${attention.slice(0, 8).map((r) => `<tr><td><a class="pub" href="#/a/${esc(r.patent_asset_id)}">${esc(r.publication_number)}</a><div class="xsmall muted">${esc(r.title.slice(0, 54))}</div></td><td>${r.gate_codes.filter((g) => ["IN_GRACE_PERIOD", "DEADLINE_IMMINENT", "STATUS_CONFLICT", "OWNERSHIP_UNRESOLVED"].includes(g)).map((g) => `<span class="badge ${g.includes("STATUS") || g.includes("OWNERSHIP") ? "b-bad" : "b-warn"}">${esc(g.replace(/_/g, " ").toLowerCase())}</span>`).join(" ")}</td><td class="nowrap small">${fmtDate(r.next_deadline)}${r.next_deadline ? `<div class="xsmall muted">${daysTo(r.next_deadline)} days</div>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty small">Nothing urgent.</div>`}</div>
-  </div>
-  <div class="grid g2" style="margin-top:18px">
-    <div class="card"><h3>Sources & freshness</h3>
+    <div class="card"><h3>Data & exports</h3>
       <dl class="kv"><dt>Data mode</dt><dd>${modeBadge(p.data_mode)}</dd><dt>Sources</dt><dd>${p.sources.map(esc).join("<br>")}</dd>
-      <dt>Unavailable</dt><dd>${p.unavailable_sources.length ? p.unavailable_sources.map((x) => `<span class="badge b-warn">${esc(x)}</span>`).join(" ") : "None"}</dd>
-      <dt>Score run</dt><dd class="mono small">${esc(run.score_run_id)} · hash ${esc(run.data_snapshot_hash.slice(0, 12))}</dd><dt>Run at</dt><dd>${fmtDT(run.run_at)}</dd></dl>
-      <div class="btn-row" style="margin-top:12px">${can("score") ? `<button class="btn btn-ghost btn-sm" id="refresh">Recheck legal status</button><button class="btn btn-ghost btn-sm" id="rescore">Re-run scoring</button>` : ""}</div></div>
-    <div class="card"><h3>Exports</h3><p class="small muted">Every export includes the data date, scoring version, weights, assumptions and the decision-support disclaimer.</p>
-      <div class="btn-row">${["csv", "xlsx", "pdf"].map((f) => `<button class="btn btn-ghost btn-sm" data-exp="${f}">${f.toUpperCase()}</button>`).join("")}</div>
-      <div class="divider"></div><h4>Business inputs</h4><p class="small muted">Download the pre-filled template, add product mappings, lifecycle, revenue band, strategy and licensing, then upload. Each upload re-scores the portfolio.</p>
+      <dt>Not connected</dt><dd>${p.unavailable_sources.length ? p.unavailable_sources.map((x) => `<span class="badge b-warn">${esc(x)}</span>`).join(" ") : "None"}</dd>
+      <dt>Scored</dt><dd>${fmtDT(run.run_at)} · ${esc(run.config.name)}</dd></dl>
+      <div class="btn-row" style="margin-top:12px">${["csv", "xlsx", "pdf"].map((f) => `<button class="btn btn-ghost btn-sm" data-exp="${f}">Export ${f.toUpperCase()}</button>`).join("")}${can("score") ? `<button class="btn btn-quiet btn-sm" id="refresh">Recheck legal status</button>` : ""}</div>
+      <div class="divider"></div><h4>Business inputs ${tip(null, "Product mappings, lifecycle, revenue band, strategy tag and licensing history can't be found in public data. Download the pre-filled template, fill it in and upload it — the portfolio is re-scored immediately.")}</h4>
       <div class="btn-row"><button class="btn btn-quiet btn-sm" id="ciTpl">Download inputs template</button>${can("inputs") ? `<label class="btn btn-ocean btn-sm">Upload inputs CSV<input type="file" accept=".csv" id="ciFile" hidden></label>` : ""}</div></div>
   </div>`;
-  $$(".legend button").forEach((b) => b.addEventListener("click", () => { S.filters[p.portfolio_id] = { recommendation: b.dataset.rec }; location.hash = `#/p/${p.portfolio_id}/assets`; }));
+  $$(".outcome").forEach((b) => {
+    const go = (e) => { if (e.target.closest(".ibtn")) return; S.filters[p.portfolio_id] = { recommendation: b.dataset.rec }; location.hash = `#/p/${p.portfolio_id}/assets`; };
+    b.addEventListener("click", go);
+    b.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); } });
+  });
+  $$(".reason-row").forEach((b) => b.addEventListener("click", () => { S.filters[p.portfolio_id] = { recommendation: "review", reason: b.dataset.reason }; location.hash = `#/p/${p.portfolio_id}/assets`; }));
   $$("[data-exp]").forEach((b) => b.addEventListener("click", () => download(`/v1/score-runs/${runId}/export.${b.dataset.exp}`, `export.${b.dataset.exp}`)));
   $$(".scatter-dot").forEach((d) => d.addEventListener("click", () => (location.hash = `#/a/${d.dataset.id}`)));
   $("#refresh")?.addEventListener("click", async (e) => { e.target.disabled = true; try { const r = await api(`/v1/portfolios/${p.portfolio_id}/refresh-status`, { method: "POST" }); toast(`Rechecked ${r.rechecked} records. ${r.note}`); router(); } catch (ex) { toast(ex.message, true); e.target.disabled = false; } });
-  $("#rescore")?.addEventListener("click", async (e) => { e.target.disabled = true; try { await api(`/v1/portfolios/${p.portfolio_id}/score-runs`, { method: "POST", body: { cost_horizon_years: [3, 5] }, headers: { "Idempotency-Key": idem() } }); toast("New score run created"); router(); } catch (ex) { toast(ex.message, true); } });
   $("#ciTpl").addEventListener("click", () => download(`/v1/portfolios/${p.portfolio_id}/customer-inputs-template.csv`, "customer_inputs.csv"));
   $("#ciUp")?.addEventListener("click", () => $("#ciFile")?.click());
   $("#ciFile")?.addEventListener("change", async (e) => {
@@ -463,8 +536,8 @@ async function tabOverview(p, runId) {
   });
 }
 
-function kpi(label, val, sub, icon, cls = "") {
-  return `<div class="kpi ${cls}"><div><div class="lbl">${esc(label)}</div><div class="val">${val}</div><div class="sub">${esc(sub)}</div></div><div class="ico">${icon}</div></div>`;
+function kpi(label, val, sub, icon, cls = "", tipKey = null) {
+  return `<div class="kpi ${cls}"><div><div class="lbl">${esc(label)} ${tipKey ? tip(tipKey) : ""}</div><div class="val">${val}</div><div class="sub">${esc(sub)}</div></div><div class="ico">${icon}</div></div>`;
 }
 
 function costChart(byYear, asOf) {
@@ -481,20 +554,21 @@ function costChart(byYear, asOf) {
   </svg>`;
 }
 
-function scatter(rows) {
+function scatter(rows, thr = { retain: 65, review: 45 }) {
   const pts = rows.filter((r) => r.strategic_score !== null && r.cost_5y !== null);
   if (!pts.length) return `<div class="empty small">No assets have both a score and a known cost yet.</div>`;
   const W = 560, H = 260, pl = 46, pb = 34, pt = 10, pr = 14;
   const maxC = Math.max(1000, ...pts.map((r) => Number(r.cost_5y)));
   const x = (c) => pl + (W - pl - pr) * (c / maxC);
   const y = (s) => pt + (H - pt - pb) * (1 - s / 100);
-  const bands = [[80, 100, "#005376"], [65, 80, "#00A39A"], [45, 65, "#D9A46F"], [0, 45, "#B5523B"]];
+  const bands = [[thr.retain, 100, "#00A39A"], [thr.review, thr.retain, "#D9A46F"], [0, thr.review, "#B5523B"]];
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Score versus five-year cost scatter plot">
     ${bands.map(([a, b, c]) => `<rect x="${pl}" y="${y(b)}" width="${W - pl - pr}" height="${y(a) - y(b)}" fill="${c}" opacity=".06"/>`).join("")}
-    ${[0, 45, 65, 80, 100].map((s) => `<line class="axis" x1="${pl}" x2="${W - pr}" y1="${y(s)}" y2="${y(s)}" stroke-dasharray="3 4"/><text x="${pl - 6}" y="${y(s) + 4}" text-anchor="end">${s}</text>`).join("")}
+    ${[0, thr.review, thr.retain, 100].map((s) => `<line class="axis" x1="${pl}" x2="${W - pr}" y1="${y(s)}" y2="${y(s)}" stroke-dasharray="3 4"/><text x="${pl - 6}" y="${y(s) + 4}" text-anchor="end">${s}</text>`).join("")}
     ${[0, 0.5, 1].map((t) => `<text x="${x(t * maxC)}" y="${H - 14}" text-anchor="middle">$${Math.round((t * maxC) / 1000)}k</text>`).join("")}
     <text x="${(W + pl) / 2}" y="${H - 1}" text-anchor="middle">5-year forward cost →</text>
-    <text x="12" y="${H / 2}" transform="rotate(-90 12 ${H / 2})" text-anchor="middle">Strategic value score →</text>
+    <text x="12" y="${H / 2}" transform="rotate(-90 12 ${H / 2})" text-anchor="middle">Value score →</text>
+    <text x="${W - pr - 4}" y="${y(thr.retain) - 5}" text-anchor="end" style="fill:#00756e">Retain</text><text x="${W - pr - 4}" y="${y(thr.review) - 5}" text-anchor="end" style="fill:#8a5a10">Review</text><text x="${W - pr - 4}" y="${y(0) - 5}" text-anchor="end" style="fill:#8e3a27">Abandon</text>
     ${pts.map((r) => `<circle class="scatter-dot" data-id="${esc(r.patent_asset_id)}" cx="${x(Number(r.cost_5y)).toFixed(1)}" cy="${y(r.strategic_score).toFixed(1)}" r="6" fill="${REC_COLORS[r.recommendation]}" stroke="#fff" stroke-width="1.5" style="cursor:pointer"><title>${esc(r.publication_number)} — ${esc(recLabel(r.recommendation))}\nScore ${r.strategic_score} · $${Number(r.cost_5y).toLocaleString()}</title></circle>`).join("")}
   </svg>`;
 }
@@ -503,72 +577,70 @@ function scatter(rows) {
 async function tabAssets(p, runId) {
   const f = (S.filters[p.portfolio_id] = S.filters[p.portfolio_id] || {});
   f.sort = f.sort || "strategic_score"; f.order = f.order || "desc"; f.page = f.page || 1;
-  const sel = new Set();
   const tb = $("#tb");
-  tb.innerHTML = `<div class="card">
+  tb.innerHTML = `<div class="card model-card" id="modelCard"><div class="skeleton"></div></div>
+  <div class="card" style="margin-top:16px">
     <div class="filters" id="flt">
       <label>Search<input class="input" name="q" placeholder="Publication, title, owner" value="${esc(f.q || "")}"></label>
-      <label>Recommendation<select class="input" name="recommendation"><option value="">All</option>${REC_ORDER.map((k) => `<option value="${k}" ${f.recommendation === k ? "selected" : ""}>${esc(recLabel(k))}</option>`).join("")}</select></label>
-      <label>Gate<select class="input" name="gate"><option value="">All</option>${["PASS", "REVIEW", "BLOCK"].map((g) => `<option ${f.gate === g ? "selected" : ""}>${g}</option>`).join("")}</select></label>
+      <label>Outcome<select class="input" name="recommendation"><option value="">All</option>${REC_ORDER.map((k) => `<option value="${k}" ${f.recommendation === k ? "selected" : ""}>${esc(recLabel(k))}</option>`).join("")}</select></label>
+      <label>Review reason<select class="input" name="reason"><option value="">Any</option>${Object.entries(REASON_SHORT).map(([k, v]) => `<option value="${k}" ${f.reason === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
       <label>Jurisdiction<select class="input" name="jurisdiction"><option value="">All</option>${["US", "EP", "CN"].map((g) => `<option ${f.jurisdiction === g ? "selected" : ""}>${g}</option>`).join("")}</select></label>
       <label>Status<select class="input" name="status"><option value="">All</option>${["active", "pending", "expired", "lapsed", "abandoned"].map((g) => `<option ${f.status === g ? "selected" : ""}>${g}</option>`).join("")}</select></label>
-      <label>Deadline within<select class="input" name="deadline_days"><option value="">Any</option>${[30, 90, 180, 365].map((d) => `<option value="${d}" ${String(f.deadline_days) === String(d) ? "selected" : ""}>${d} days</option>`).join("")}</select></label>
-      <label>Min confidence<select class="input" name="min_confidence"><option value="">Any</option>${[50, 70, 85].map((d) => `<option value="${d}" ${String(f.min_confidence) === String(d) ? "selected" : ""}>${d}%</option>`).join("")}</select></label>
-      <label>Reviewed<select class="input" name="decided"><option value="">Any</option><option value="no" ${f.decided === "no" ? "selected" : ""}>Not yet</option><option value="yes" ${f.decided === "yes" ? "selected" : ""}>Decided</option></select></label>
+      <label>Fee due within<select class="input" name="deadline_days"><option value="">Any</option>${[30, 90, 180, 365].map((d) => `<option value="${d}" ${String(f.deadline_days) === String(d) ? "selected" : ""}>${d} days</option>`).join("")}</select></label>
       <button class="btn btn-quiet btn-sm" id="clr" type="button">Clear</button>
       <span style="flex:1"></span>
       <div class="btn-row">${["csv", "xlsx", "pdf"].map((x) => `<button class="btn btn-ghost btn-xs" data-exp="${x}" type="button">${x.toUpperCase()}</button>`).join("")}</div>
     </div>
     <div id="tbl"><div class="skeleton"></div></div>
-  </div>
-  <div class="bulkbar hide" id="bulk"><b id="bulkN">0</b> selected<span class="small" style="opacity:.8">Bulk actions create review batches only — never bulk abandonment.</span><span style="flex:1"></span>
-    <button class="btn btn-ghost btn-sm" id="mkBatch" ${can("batch") ? "" : "disabled title='Only IP managers create review batches'"}>Create review batch</button><button class="btn btn-quiet btn-sm" style="color:#fff" id="clrSel">Clear</button></div>`;
+  </div>`;
+  const dims = S.meta.dimensions;
+  let modelDrawn = false;
+  const drawModel = (cfg) => {
+    if (modelDrawn) return; modelDrawn = true;
+    const w = cfg.weights, t = cfg.thresholds;
+    $("#modelCard").innerHTML = `<div class="card-head"><h3>Scoring model in use ${tip("model")}</h3><span class="small muted">${esc(cfg.name)} · v${esc(cfg.version)} · ${esc(S.meta.scoring_version)} ${cfg.kind === "scenario" ? '<span class="badge b-warn">scenario</span>' : ""}</span></div>
+      <div class="weights">${dims.map((d) => `<div class="wt"><div class="wt-top"><span>${esc(d.label)}</span>${tip(d.key)}</div><div class="wt-val">${Number(w[d.key]).toFixed(0)}<small>/100</small></div><div class="bar"><i style="width:${Number(w[d.key]) * 2}%"></i></div></div>`).join("")}</div>
+      <div class="rules"><span>${recPill("retain")} score ≥ <b>${t.retain}</b></span><span>${recPill("review")} score ${t.review}–${t.retain - 1}, or coverage &lt; <b>${t.coverage_min}%</b>, confidence &lt; <b>${t.confidence_min}%</b>, or a data / legal check</span><span>${recPill("abandon")} score &lt; <b>${t.review}</b></span>${tip("outcome")}
+      <a class="small" href="#/settings" style="margin-left:auto">Change model →</a></div>
+      <p class="xsmall muted" style="margin:8px 0 0">Score = 100 × Σ(weight × rating ÷ 5) ÷ Σ(weight), over parameters with evidence. Ratings in the table below are 0–5; <span class="rt rt-u">?</span> = UNKNOWN (excluded, not zero).</p>`;
+  };
   const load = async () => {
-    const params = {}; for (const k of ["q", "recommendation", "gate", "jurisdiction", "status", "deadline_days", "min_confidence", "decided"]) if (f[k]) params[k] = f[k];
-    const res = await api(`/v1/score-runs/${runId}/results?${new URLSearchParams({ ...params, sort: f.sort, order: f.order, page: f.page, page_size: 50 })}`);
-    const th = (k, l, cls = "") => `<th class="${cls}"><button data-sort="${k}">${l} ${f.sort === k ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button></th>`;
-    $("#tbl").innerHTML = res.items.length ? `<div class="table-wrap"><table class="t"><thead><tr><th><input type="checkbox" id="all" aria-label="Select all on page"></th>
-      ${th("publication_number", "Asset")}${th("jurisdiction", "Jur.")}${th("status", "Status")}${th("strategic_score", "Score")}${th("data_coverage", "Coverage", "num")}${th("evidence_confidence", "Confidence", "num")}${th("recommendation", "Recommendation")}<th>Gate</th>${th("cost_5y", "5-yr cost", "num")}${th("next_deadline", "Next deadline")}<th>Review</th></tr></thead>
-      <tbody>${res.items.map((r) => `<tr data-id="${esc(r.patent_asset_id)}" class="${sel.has(r.patent_asset_id) ? "sel" : ""}"><td><input type="checkbox" class="rowsel" value="${esc(r.patent_asset_id)}" ${sel.has(r.patent_asset_id) ? "checked" : ""} aria-label="Select ${esc(r.publication_number)}"></td>
-        <td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.title)}</a><div class="pub">${esc(r.publication_number)} <span class="muted xsmall">· ${esc(r.relationship_type)}</span></div></td>
-        <td>${esc(r.jurisdiction)}</td><td>${statusTxt(r.status)}</td>
-        <td>${r.strategic_score === null ? '<span class="unknown">n/a</span>' : `<div class="scorecell"><b>${r.strategic_score.toFixed(0)}</b><div class="bar" style="width:60px"><i style="width:${r.strategic_score}%"></i></div></div>`}${r.sensitive ? '<div class="xsmall muted" title="Category changes with ±5 weight points">weight-sensitive</div>' : ""}</td>
-        <td class="num">${r.data_coverage.toFixed(0)}%</td><td class="num">${r.evidence_confidence.toFixed(0)}%</td>
-        <td>${recPill(r.recommendation, r.recommendation_label)}</td><td>${gatePill(r.gate_status)}</td>
+    const params = {}; for (const k of ["q", "recommendation", "jurisdiction", "status", "deadline_days"]) if (f[k]) params[k] = f[k];
+    const res = await api(`/v1/score-runs/${runId}/results?${new URLSearchParams({ ...params, sort: f.sort, order: f.order, page: 1, page_size: 500 })}`);
+    drawModel(res.config);
+    let items = res.items;
+    if (f.reason) items = items.filter((r) => r.review_reason === f.reason);
+    const total = items.length, ps = 50, pages = Math.max(1, Math.ceil(total / ps));
+    if (f.page > pages) f.page = pages;
+    const pageItems = items.slice((f.page - 1) * ps, f.page * ps);
+    const w = res.config.weights;
+    const th = (k, l, cls = "", tk = null) => `<th class="${cls}"><span class="thw"><button data-sort="${k}">${l} ${f.sort === k ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button>${tk ? tip(tk) : ""}</span></th>`;
+    $("#tbl").innerHTML = items.length ? `<div class="table-wrap"><table class="t assets-t"><thead>
+      <tr><th colspan="2"></th><th colspan="${dims.length}" class="grp">Parameter ratings (0–5) · weight ${tip("rating")}</th><th colspan="5"></th></tr>
+      <tr>${th("publication_number", "Asset", "", "asset")}${th("strategic_score", "Score", "", "score")}
+      ${dims.map((d) => `<th class="dimh"><span class="thw"><span>${esc(DIM_SHORT[d.key])}<small>${Number(w[d.key]).toFixed(0)}</small></span>${tip(d.key, d.label + ": " + DIM_HELP[d.key])}</span></th>`).join("")}
+      ${th("data_coverage", "Coverage", "num", "coverage")}${th("recommendation", "Outcome", "", "outcome")}<th><span class="thw">Checks ${tip("checks")}</span></th>${th("cost_5y", "5-yr cost", "num", "cost5")}${th("next_deadline", "Next fee due", "", "deadline")}</tr></thead>
+      <tbody>${pageItems.map((r) => `<tr data-id="${esc(r.patent_asset_id)}">
+        <td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.title)}</a><div class="pub">${esc(r.publication_number)}</div><div class="xsmall muted">${statusTxt(r.status)} · ${esc(r.jurisdiction)} · ${esc(r.relationship_type)}</div></td>
+        <td>${r.strategic_score === null ? '<span class="unknown">n/a</span>' : `<div class="scorecell"><b>${r.strategic_score.toFixed(0)}</b><div class="bar" style="width:48px"><i style="width:${r.strategic_score}%"></i></div></div>`}</td>
+        ${dims.map((d) => `<td class="center">${ratingChip(r.ratings?.[d.key])}</td>`).join("")}
+        <td class="num" title="Evidence confidence ${r.evidence_confidence.toFixed(0)}%">${r.data_coverage.toFixed(0)}%</td>
+        <td>${recCell(r)}</td><td>${gatePill(r.gate_status)}</td>
         <td class="num">${fmtMoney(r.cost_5y, r.cost_unknown)}</td>
-        <td class="nowrap small">${r.next_deadline ? `${fmtDate(r.next_deadline)}<div class="xsmall ${daysTo(r.next_deadline) <= 120 ? "rec-abandonment_review_candidate" : "muted"}">${daysTo(r.next_deadline)} days</div>` : "—"}</td>
-        <td class="small">${r.decision ? `<span class="badge b-ocean">${esc(r.decision)}</span>` : '<span class="muted">—</span>'}</td></tr>`).join("")}</tbody></table></div>
-      <div class="pager"><span class="muted">${res.total} assets · page ${res.page} of ${Math.max(1, Math.ceil(res.total / res.page_size))}</span><div class="btn-row"><button class="btn btn-ghost btn-xs" id="prev" ${res.page <= 1 ? "disabled" : ""}>← Prev</button><button class="btn btn-ghost btn-xs" id="next" ${res.page * res.page_size >= res.total ? "disabled" : ""}>Next →</button></div></div>`
+        <td class="nowrap small">${r.next_deadline ? `${fmtDate(r.next_deadline)}<div class="xsmall ${daysTo(r.next_deadline) <= 120 ? "rec-abandon" : "muted"}">${daysTo(r.next_deadline)} days</div>` : "—"}</td></tr>`).join("")}</tbody></table></div>
+      <div class="pager"><span class="muted">${total} assets · page ${f.page} of ${pages}</span><div class="btn-row"><button class="btn btn-ghost btn-xs" id="prev" ${f.page <= 1 ? "disabled" : ""}>← Prev</button><button class="btn btn-ghost btn-xs" id="next" ${f.page >= pages ? "disabled" : ""}>Next →</button></div></div>`
       : `<div class="empty"><h3>No assets match</h3><p class="small">Adjust or clear the filters.</p></div>`;
     $$("[data-sort]").forEach((b) => b.addEventListener("click", () => { const k = b.dataset.sort; f.order = f.sort === k && f.order === "desc" ? "asc" : "desc"; f.sort = k; load(); }));
     $("#prev")?.addEventListener("click", () => { f.page--; load(); });
     $("#next")?.addEventListener("click", () => { f.page++; load(); });
-    $("#all")?.addEventListener("change", (e) => { $$(".rowsel").forEach((c) => { c.checked = e.target.checked; c.dispatchEvent(new Event("change")); }); });
-    $$(".rowsel").forEach((c) => c.addEventListener("change", () => { c.checked ? sel.add(c.value) : sel.delete(c.value); c.closest("tr").classList.toggle("sel", c.checked); upd(); }));
   };
-  const upd = () => { $("#bulk").classList.toggle("hide", !sel.size); $("#bulkN").textContent = sel.size; };
   let tmr;
   $("#flt").addEventListener("input", (e) => { if (!e.target.name) return; f[e.target.name] = e.target.value; f.page = 1; clearTimeout(tmr); tmr = setTimeout(load, e.target.name === "q" ? 300 : 0); });
   $("#clr").addEventListener("click", () => { S.filters[p.portfolio_id] = {}; tabAssets(p, runId); });
   $$("[data-exp]", tb).forEach((b) => b.addEventListener("click", () => download(`/v1/score-runs/${runId}/export.${b.dataset.exp}${f.recommendation ? "?recommendation=" + f.recommendation : ""}`, "export")));
-  $("#clrSel").addEventListener("click", () => { sel.clear(); $$(".rowsel").forEach((c) => { c.checked = false; c.closest("tr").classList.remove("sel"); }); upd(); });
-  $("#mkBatch").addEventListener("click", async () => {
-    const users = await api("/v1/users");
-    modal(`<h3>Create review batch</h3><p class="small muted">${sel.size} asset(s) will be assigned for human review. Reviewers record accept / reject / override / defer with reason codes.</p>
-      <form id="bf"><label class="f"><span>Batch name</span><input class="input" name="name" required value="Review — ${new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" })}"></label>
-      <div class="row2"><label class="f"><span>Assign to</span><select class="input" name="assignee_id">${users.filter((u) => ["counsel", "ip_manager"].includes(u.role)).map((u) => `<option value="${esc(u.id)}">${esc(u.name)} — ${esc(u.role_label)}</option>`).join("")}</select></label>
-      <label class="f"><span>Due date</span><input class="input" type="date" name="due_date"></label></div>
-      <div class="btn-row" style="justify-content:flex-end"><button type="button" class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-teal">Create batch</button></div></form>`);
-    $("#bf").addEventListener("submit", async (e) => {
-      e.preventDefault(); const fd = new FormData(e.target);
-      try { const r = await api("/v1/review-batches", { method: "POST", body: { portfolio_id: p.portfolio_id, name: fd.get("name"), asset_ids: [...sel], assignee_id: fd.get("assignee_id") || null, due_date: fd.get("due_date") || null } });
-        closeModal(); toast(`Review batch created with ${r.assets} assets`); location.hash = `#/batch/${r.batch_id}`; } catch (ex) { toast(ex.message, true); }
-    });
-  });
   await load();
 }
 
-/* ---------------- families */
 async function tabFamilies(p, runId) {
   const [fams, res] = await Promise.all([api(`/v1/portfolios/${p.portfolio_id}/families`), fetchRows(runId)]);
   const by = Object.fromEntries(res.items.map((r) => [r.patent_asset_id, r]));
@@ -641,7 +713,7 @@ function impactHtml(r, saved) {
   const c = r.comparison;
   const keys = REC_ORDER.filter((k) => c.baseline_counts[k] || c.scenario_counts[k]);
   return `<div class="card-head"><h3>Impact vs. baseline</h3>${saved ? '<span class="badge b-ok">Saved</span>' : '<span class="badge b-mute">Preview — not saved</span>'}</div>
-  <div class="grid g2"><div><table class="t"><thead><tr><th>Category</th><th class="num">Baseline</th><th class="num">Scenario</th><th class="num">Δ</th></tr></thead><tbody>${keys.map((k) => { const d = (c.scenario_counts[k] || 0) - (c.baseline_counts[k] || 0); return `<tr><td>${recPill(k)}</td><td class="num">${c.baseline_counts[k] || 0}</td><td class="num">${c.scenario_counts[k] || 0}</td><td class="num ${d > 0 ? "delta-up" : d < 0 ? "delta-down" : ""}">${d > 0 ? "+" : ""}${d}</td></tr>`; }).join("")}</tbody></table></div>
+  <div class="grid g2"><div class="table-wrap"><table class="t"><thead><tr><th>Outcome</th><th class="num">Baseline</th><th class="num">Scenario</th><th class="num">Δ</th></tr></thead><tbody>${keys.map((k) => { const d = (c.scenario_counts[k] || 0) - (c.baseline_counts[k] || 0); return `<tr><td>${recPill(k)}</td><td class="num">${c.baseline_counts[k] || 0}</td><td class="num">${c.scenario_counts[k] || 0}</td><td class="num ${d > 0 ? "delta-up" : d < 0 ? "delta-down" : ""}">${d > 0 ? "+" : ""}${d}</td></tr>`; }).join("")}</tbody></table></div>
   <div class="stack"><div class="metric"><div class="lbl">Assets changing category</div><div class="val">${c.changed.length} <span class="small muted">in ${c.changed_families} families</span></div></div>
   <div class="metric"><div class="lbl">5-yr cost in abandonment-review</div><div class="val">${fmtMoney(c.abandon_review_cost_5y.baseline)} → ${fmtMoney(c.abandon_review_cost_5y.scenario)}</div></div>
   <div class="metric"><div class="lbl">Average coverage</div><div class="val">${c.avg_coverage.baseline}% → ${c.avg_coverage.scenario}%</div></div></div></div>
@@ -652,28 +724,13 @@ function impactHtml(r, saved) {
 }
 
 /* ---------------- reviews tab */
-async function tabReviews(p) {
-  const [batches, decs] = await Promise.all([api(`/v1/review-batches?portfolio_id=${p.portfolio_id}`), api(`/v1/review-decisions?portfolio_id=${p.portfolio_id}`)]);
-  $("#tb").innerHTML = `<div class="grid g2"><div class="card"><h3>Review batches</h3>${batchTable(batches)}</div>
-  <div class="card"><h3>Decisions</h3>${decTable(decs)}</div></div>`;
-}
-function batchTable(b) {
-  return b.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Batch</th><th>Progress</th><th>Assignee</th><th>Due</th></tr></thead><tbody>${b.map((x) => `<tr><td><a href="#/batch/${esc(x.batch_id)}"><b>${esc(x.name)}</b></a><div class="xsmall muted">by ${esc(x.created_by)} · ${fmtDT(x.created_at)}</div></td><td style="min-width:120px"><div class="small">${x.decided} / ${x.assets}</div><div class="bar"><i style="width:${(x.decided / x.assets) * 100}%"></i></div></td><td class="small">${esc(x.assignee || "—")}</td><td class="small">${fmtDate(x.due_date)}</td></tr>`).join("")}</tbody></table></div>`
-    : `<div class="empty small">No batches. Select assets in the Assets tab to create one.</div>`;
-}
-function decTable(d) {
-  return d.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Asset</th><th>Decision</th><th>Reason</th><th>Reviewer</th></tr></thead><tbody>${d.map((x) => `<tr><td><a class="pub" href="#/a/${esc(x.patent_asset_id)}">${esc(x.publication_number)}</a><div class="xsmall muted">${esc((x.title || "").slice(0, 48))}</div></td><td><span class="badge b-ocean">${esc(x.decision)}</span>${x.override_recommendation ? `<div class="xsmall">→ ${esc(recLabel(x.override_recommendation))}</div>` : ""}<div class="xsmall muted">was: ${esc(recLabel(x.original_recommendation))}</div></td><td class="small">${esc(x.reason_label)}${x.notes ? `<div class="xsmall muted">${esc(x.notes)}</div>` : ""}</td><td class="small">${esc(x.reviewer)}<div class="xsmall muted">${fmtDT(x.created_at)}</div></td></tr>`).join("")}</tbody></table></div>`
-    : `<div class="empty small">No decisions recorded yet.</div>`;
-}
 
-/* ---------------- runs tab */
-async function tabRuns(p) {
-  const runs = await api(`/v1/portfolios/${p.portfolio_id}/score-runs`);
-  $("#tb").innerHTML = `<div class="card"><div class="card-head"><h3>Score run history</h3>${can("score") ? '<button class="btn btn-teal btn-sm" id="rr">Run scoring now</button>' : ""}</div>
-  <p class="small muted">Every run stores the scoring version, a snapshot of weights/thresholds/assumptions and a hash of the input data, so identical inputs reproduce identical scores.</p>
-  <div class="table-wrap"><table class="t"><thead><tr><th>Run</th><th>Config</th><th>Data hash</th><th>Recommendations</th><th>5-yr cost</th><th></th></tr></thead><tbody>${runs.map((r) => `<tr><td class="small"><span class="mono">${esc(r.score_run_id)}</span><div class="xsmall muted">${fmtDT(r.run_at)} · ${esc(r.created_by)}</div></td><td class="small">${esc(r.config)} ${r.kind === "scenario" ? '<span class="badge b-warn">scenario</span>' : ""}<div class="xsmall muted">${esc(r.scoring_version)}</div></td><td class="mono xsmall">${esc(r.data_snapshot_hash.slice(0, 16))}</td><td class="xsmall">${Object.entries(r.summary.by_recommendation || {}).map(([k, v]) => `${esc(recLabel(k))}: ${v}`).join("<br>")}</td><td class="num">${fmtMoney(r.summary.forward_cost?.["5"])}</td><td><a class="btn btn-ghost btn-xs" href="#/p/${esc(p.portfolio_id)}/assets?run=${esc(r.score_run_id)}">Open</a></td></tr>`).join("")}</tbody></table></div></div>`;
-  $("#rr")?.addEventListener("click", async () => { await api(`/v1/portfolios/${p.portfolio_id}/score-runs`, { method: "POST", body: {}, headers: { "Idempotency-Key": idem() } }); toast("Score run created"); tabRuns(p); });
-}
+
+
+
+
+
+
 
 /* ================================================================ ASSET DETAIL */
 async function viewAsset(aid, q) {
@@ -692,14 +749,13 @@ async function viewAsset(aid, q) {
   <div class="wrap band-wrap"><div class="grid g-side">
     <div class="stack">
       ${sc ? recCard(sc, run, d) : '<div class="card">No score in this run.</div>'}
-      ${gates.length ? `<div class="card"><div class="card-head"><h3>Gates & warnings</h3>${gatePill(sc.gate_status)}</div><ul class="gates">${gates.map((g) => `<li><span class="sev sev-${esc(g.severity)}">${esc(g.severity)}</span><div><b class="small">${esc(g.code.replace(/_/g, " "))}</b><div>${esc(g.message)}</div></div></li>`).join("")}</ul></div>` : ""}
+      ${gates.length ? `<div class="card"><div class="card-head"><h3>Checks & warnings ${tip("checks")}</h3>${gatePill(sc.gate_status)}</div><ul class="gates">${gates.map((g) => `<li><span class="sev sev-${esc(g.severity)}">${esc(g.severity)}</span><div><b class="small">${esc(g.code.replace(/_/g, " "))}</b><div>${esc(g.message)}</div></div></li>`).join("")}</ul></div>` : ""}
       ${sc ? explainCard(sc) : ""}
       ${sc ? dimsCard(sc, run) : ""}
       ${evidenceCard(d.evidence)}
       ${sc ? costCard(sc.cost, d.cost_actuals, a) : ""}
     </div>
     <div class="stack">
-      ${decisionCard(d, sc, run)}
       ${(codes.includes("STATUS_CONFLICT") || codes.includes("OWNERSHIP_UNRESOLVED") || codes.includes("STALE_STATUS") || codes.includes("DEADLINE_IMMINENT") || codes.includes("IN_GRACE_PERIOD")) ? resolveCard(a, codes) : ""}
       ${inputsCard(a)}
       ${familyCard(d.family, a)}
@@ -714,7 +770,6 @@ async function viewAsset(aid, q) {
         <dt>Inventors</dt><dd>${(a.inventors || []).map(esc).join(", ") || "—"}</dd><dt>Original applicant</dt><dd>${esc(a.original_applicant)}</dd><dt>Current owner</dt><dd>${a.current_owner ? esc(a.current_owner) : '<span class="unknown">UNVERIFIED</span>'}</dd>
         <dt>Entity size</dt><dd>${esc(a.entity_size)}</dd><dt>Data as of</dt><dd>${fmtDT(a.data_as_of)}</dd></dl>
         ${a.abstract ? `<div class="divider"></div><p class="small muted">${esc(a.abstract)}</p>` : ""}</div>
-      <div class="card"><h3>Audit trail</h3>${d.audit.length ? `<ul class="why-list small">${d.audit.map((e) => `<li><b>${esc(e.action.replace(/_/g, " "))}</b> by ${esc(e.actor)} <span class="muted xsmall">· ${fmtDT(e.timestamp)}${e.before_hash ? ` · ${esc(e.before_hash.slice(0, 8))}→${esc((e.after_hash || "").slice(0, 8))}` : ""}</span></li>`).join("")}</ul>` : '<p class="small muted">No actions on this asset yet.</p>'}</div>
     </div></div></div>`;
   bindAsset(d);
 }
@@ -727,25 +782,27 @@ function ring(score) {
 
 function recCard(sc, run, d) {
   const ex = sc.explanation;
-  const band = ex.score_band && ex.score_band !== sc.recommendation && sc.strategic_score !== null ? `<div class="xsmall muted">Score band alone would be: ${esc(recLabel(ex.score_band))}</div>` : "";
+  const t = run.config.thresholds;
   return `<div class="card"><div class="score-hero">${ring(sc.strategic_score)}
-    <div><div class="small muted">Recommendation</div><div class="rec-big"><i style="background:${REC_COLORS[sc.recommendation]}"></i>${esc(sc.recommendation_label)}</div>${band}
+    <div><div class="small muted">Outcome ${tip("outcome")}</div><div class="rec-big"><i style="background:${REC_COLORS[sc.recommendation]}"></i>${esc(sc.recommendation_label)}</div>
+      ${ex.review_reason_label ? `<div class="reason-big">Why review: ${esc(ex.review_reason_label)}</div>` : ""}
       <p class="small" style="margin:6px 0 0">${esc(ex.required_handling)}</p>
       <div class="metric-row">
-        <div class="metric"><div class="lbl">Data coverage</div><div class="val">${sc.data_coverage.toFixed(0)}%</div><div class="bar ${barCls(sc.data_coverage)}"><i style="width:${sc.data_coverage}%"></i></div></div>
-        <div class="metric"><div class="lbl">Evidence confidence</div><div class="val">${sc.evidence_confidence.toFixed(0)}%</div><div class="bar ${barCls(sc.evidence_confidence)}"><i style="width:${sc.evidence_confidence}%"></i></div></div>
-        <div class="metric"><div class="lbl">Legal / operational gate</div><div class="val">${gatePill(sc.gate_status)}</div></div>
+        <div class="metric"><div class="lbl">Data coverage ${tip("coverage")}</div><div class="val">${sc.data_coverage.toFixed(0)}%</div><div class="bar ${barCls(sc.data_coverage)}"><i style="width:${sc.data_coverage}%"></i></div></div>
+        <div class="metric"><div class="lbl">Evidence confidence ${tip("confidence")}</div><div class="val">${sc.evidence_confidence.toFixed(0)}%</div><div class="bar ${barCls(sc.evidence_confidence)}"><i style="width:${sc.evidence_confidence}%"></i></div></div>
+        <div class="metric"><div class="lbl">Checks ${tip("checks")}</div><div class="val">${gatePill(sc.gate_status)}</div></div>
       </div></div></div>
-    ${sc.data_coverage < 70 ? `<div class="callout callout-cream" style="margin-top:14px">${ICON.info}<div>A score of ${sc.strategic_score ?? "—"} with ${sc.data_coverage.toFixed(0)}% coverage is <b>not</b> equivalent to the same score with high coverage. Missing dimensions are excluded, not counted as zero.</div></div>` : ""}
+    <div class="rules small" style="margin-top:14px">${recPill("retain")} ≥ ${t.retain}<span class="muted">·</span>${recPill("review")} ${t.review}–${t.retain - 1}<span class="muted">·</span>${recPill("abandon")} &lt; ${t.review}<span class="muted">· needs coverage ≥ ${t.coverage_min}% and confidence ≥ ${t.confidence_min}%</span></div>
+    ${sc.data_coverage < t.coverage_min ? `<div class="callout callout-cream" style="margin-top:12px">${ICON.info}<div>Only ${sc.data_coverage.toFixed(0)}% of the scoring weight has evidence, so this patent can't be confidently called Retain or Abandon yet. Missing parameters are left out, not counted as zero — add the inputs listed below.</div></div>` : ""}
     ${(ex.confidence_notes || []).length ? `<p class="xsmall muted" style="margin-top:10px">Confidence adjustments: ${ex.confidence_notes.map(esc).join("; ")}</p>` : ""}
-    <p class="xsmall muted" style="margin:10px 0 0">${esc(run.config.name)} · ${esc(run.scoring_version)} · run <span class="mono">${esc(run.id)}</span> · data hash <span class="mono">${esc(run.data_snapshot_hash.slice(0, 12))}</span> · as of ${fmtDate(run.as_of_date)}</p></div>`;
+    <p class="xsmall muted" style="margin:10px 0 0">${esc(run.config.name)} · ${esc(run.scoring_version)} · data as of ${fmtDate(run.as_of_date)}</p></div>`;
 }
 
 function explainCard(sc) {
   const ex = sc.explanation;
-  return `<div class="card"><h3>Why this recommendation</h3><div class="grid g2">
-    <div><h4>Top positive factors</h4>${ex.positives.length ? `<ul class="why-list plus">${ex.positives.map((x) => `<li>${esc(x.text)}</li>`).join("")}</ul>` : '<p class="small muted">No dimension rated 3 or above.</p>'}</div>
-    <div><h4>Top risk / negative factors</h4>${ex.negatives.length ? `<ul class="why-list minus">${ex.negatives.map((x) => `<li>${esc(x.text)}</li>`).join("")}</ul>` : '<p class="small muted">No dimension rated 2 or below.</p>'}</div></div>
+  return `<div class="card"><h3>Why this outcome</h3><div class="grid g2">
+    <div><h4>Top positive factors</h4>${ex.positives.length ? `<ul class="why-list plus">${ex.positives.map((x) => `<li>${esc(x.text)}</li>`).join("")}</ul>` : '<p class="small muted">No parameter rated 3 or above.</p>'}</div>
+    <div><h4>Top risk / negative factors</h4>${ex.negatives.length ? `<ul class="why-list minus">${ex.negatives.map((x) => `<li>${esc(x.text)}</li>`).join("")}</ul>` : '<p class="small muted">No parameter rated 2 or below.</p>'}</div></div>
     ${ex.missing.length ? `<div class="divider"></div><h4>Missing inputs</h4><ul class="why-list">${ex.missing.map((m) => `<li><b>${esc(m.label)}</b> <span class="muted small">(weight ${m.weight})</span> — ${esc(m.hint)}</li>`).join("")}</ul>` : ""}
     <div class="divider"></div><h4>What could change the result</h4><ul class="why-list">${ex.what_could_change.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
     ${ex.sensitivity?.length ? `<p class="xsmall muted">Sensitivity: ${ex.sensitivity.map((s) => `${esc(dimLabel(s.dimension))} ${s.delta > 0 ? "+" : ""}${s.delta} → ${esc(recLabel(s.recommendation))}`).join("; ")}</p>` : ""}</div>`;
@@ -753,11 +810,11 @@ function explainCard(sc) {
 
 function dimsCard(sc, run) {
   const w = run.config.weights;
-  return `<div class="card"><div class="card-head"><h3>Score breakdown</h3><span class="small muted">Rating 0–5 per dimension, or UNKNOWN</span></div>
-  <div class="table-wrap"><table class="dims"><thead><tr><th>Dimension</th><th class="num">Weight</th><th>Rating</th><th>Rationale</th><th></th></tr></thead><tbody>
-  ${S.meta.dimensions.map((dm) => { const v = sc.dimension_scores[dm.key]; const r = v.rating; return `<tr><td><b>${esc(dm.label)}</b><div class="basis">${esc(v.basis || "no evidence")}${v.basis === "analyst" && v.derived_rating !== null && v.derived_rating !== undefined ? ` · derived was ${v.derived_rating}` : ""}</div></td><td class="num">${Number(w[dm.key]).toFixed(0)}</td>
+  return `<div class="card"><div class="card-head"><h3>Score breakdown by parameter ${tip("rating")}</h3><span class="small muted">Rating 0–5 per parameter, or UNKNOWN</span></div>
+  <div class="table-wrap"><table class="dims"><thead><tr><th>Parameter</th><th class="num">Weight ${tip("weight")}</th><th>Rating</th><th class="num">Points</th><th>Why</th><th></th></tr></thead><tbody>
+  ${S.meta.dimensions.map((dm) => { const v = sc.dimension_scores[dm.key]; const r = v.rating; return `<tr><td><b>${esc(dm.label)}</b> ${tip(dm.key)}<div class="basis">${esc(v.basis || "no evidence")}${v.basis === "analyst" && v.derived_rating !== null && v.derived_rating !== undefined ? ` · derived was ${v.derived_rating}` : ""}</div></td><td class="num">${Number(w[dm.key]).toFixed(0)}</td>
     <td class="nowrap">${r === null ? '<span class="unknown">UNKNOWN</span>' : `<span class="dots" aria-label="${r} of 5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= r ? "on" : ""}"></i>`).join("")}</span> <b>${r}</b>`}</td>
-    <td class="small">${esc(v.rationale)}</td><td>${can("inputs") ? `<button class="btn btn-quiet btn-xs" data-dim="${dm.key}">Add input</button>` : ""}</td></tr>`; }).join("")}
+    <td class="num small">${r === null ? "—" : ((Number(w[dm.key]) * r) / 5).toFixed(1) + " / " + Number(w[dm.key]).toFixed(0)}</td><td class="small">${esc(v.rationale)}</td><td>${can("inputs") ? `<button class="btn btn-quiet btn-xs" data-dim="${dm.key}">Add input</button>` : ""}</td></tr>`; }).join("")}
   </tbody></table></div><p class="xsmall muted" style="margin-top:8px">Score = 100 × Σ(Wᵢ × Rᵢ/5) ÷ Σ(Wᵢ) over known dimensions. Analyst inputs override derived ratings and are audited.</p></div>`;
 }
 
@@ -789,19 +846,7 @@ function familyCard(fam, a) {
     <table class="t"><tbody>${fam.map((m) => `<tr><td class="pub">${m.id === a.id ? `<b>${esc(m.publication_number)}</b>` : `<a href="#/a/${esc(m.id)}">${esc(m.publication_number)}</a>`}</td><td class="small">${esc(m.relationship_type)}</td><td>${statusTxt(m.status)}</td><td class="num small">${fmtMoney(m.cost_5y)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
-function decisionCard(d, sc, run) {
-  const decs = d.decisions;
-  const can_ = can("decide");
-  return `<div class="card"><h3>Review decision</h3>
-  ${sc ? `<p class="small muted">Recording a decision does <b>not</b> abandon, pay or file anything. Final decisions trigger a mandatory status recheck.</p>
-  ${can_ ? `<form id="df"><label class="f"><span>Decision</span><select class="input" name="decision">${S.meta.decisions.map((x) => `<option value="${x.key}">${esc(x.label)}</option>`).join("")}</select></label>
-    <label class="f ovr hide"><span>Override to</span><select class="input" name="override_recommendation">${REC_ORDER.filter((k) => !["blocked", "insufficient_evidence"].includes(k)).map((k) => `<option value="${k}">${esc(recLabel(k))}</option>`).join("")}</select></label>
-    <label class="f"><span>Reason code</span><select class="input" name="reason_code">${S.meta.reason_codes.map((x) => `<option value="${x.key}">${esc(x.label)}</option>`).join("")}</select></label>
-    <label class="f"><span>Notes <span class="muted">(required for overrides)</span></span><textarea class="input" name="notes" placeholder="e.g. Confirmed product dependency by portfolio counsel."></textarea></label>
-    <button class="btn btn-teal" style="width:100%">Record decision</button></form>`
-    : `<div class="callout callout-cream">${ICON.info}<div>Your role (${esc(S.me.role_label)}) can view but not record decisions. Switch identity to Patent counsel or IP manager.</div></div>`}` : ""}
-  ${decs.length ? `<div class="divider"></div><h4>History</h4>${decs.map((x) => `<div class="ev"><div class="src">${esc(x.decision)}${x.override_recommendation ? " → " + esc(recLabel(x.override_recommendation)) : ""} · ${esc(x.reason_label)}</div><div class="small">${esc(x.notes)}</div><div class="meta">${esc(x.reviewer)} · ${fmtDT(x.created_at)} · original: ${esc(recLabel(x.original_recommendation))} (${x.original_score ?? "—"}) · status rechecked ${fmtDT(x.freshness_check?.rechecked_at)}</div></div>`).join("")}` : ""}</div>`;
-}
+
 
 function resolveCard(a, codes) {
   if (!can("resolve") && !can("score")) return "";
@@ -877,38 +922,12 @@ function bindAsset(d) {
 }
 
 /* ================================================================ REVIEW QUEUE */
-async function viewReviews() {
-  main().innerHTML = loading();
-  const [b, d] = await Promise.all([api("/v1/review-batches"), api("/v1/review-decisions")]);
-  main().innerHTML = `<div class="wrap page"><div class="eyebrow">Human-in-the-loop</div><h2>Review queue</h2>
-  <p class="muted" style="max-width:760px">Recommendations become decisions only here, with a reason code, notes and an automatic status recheck. Overrides preserve the original score and recommendation.</p>
-  <div class="grid g2"><div class="card"><h3>Batches</h3>${batchTable(b)}</div><div class="card"><h3>Recent decisions</h3>${decTable(d.slice(0, 40))}</div></div></div>`;
-}
 
-async function viewBatch(bid) {
-  main().innerHTML = loading();
-  const b = await api(`/v1/review-batches/${bid}`);
-  const done = b.items.filter((r) => r.decision).length;
-  main().innerHTML = `<div class="wrap page"><div class="crumbs" style="color:var(--ink-2)"><a href="#/reviews">Review queue</a> › batch</div>
-  <div class="card-head"><div><h2>${esc(b.name)}</h2><div class="muted small">${done} of ${b.items.length} decided · due ${fmtDate(b.due_date)}</div></div><a class="btn btn-ghost btn-sm" href="#/p/${esc(b.portfolio_id)}">Open portfolio</a></div>
-  <div class="progress" style="margin-bottom:16px"><i style="width:${(done / Math.max(1, b.items.length)) * 100}%"></i></div>
-  <div class="card"><div class="table-wrap"><table class="t"><thead><tr><th>Asset</th><th>Score</th><th>Coverage</th><th>Recommendation</th><th>Gate</th><th class="num">5-yr cost</th><th>Decision</th><th></th></tr></thead><tbody>
-  ${b.items.map((r) => `<tr><td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}">${esc(r.title)}</a><div class="pub">${esc(r.publication_number)}</div></td><td>${r.strategic_score ?? "—"}</td><td>${r.data_coverage.toFixed(0)}%</td><td>${recPill(r.recommendation)}</td><td>${gatePill(r.gate_status)}</td><td class="num">${fmtMoney(r.cost_5y, r.cost_unknown)}</td><td>${r.decision ? `<span class="badge b-ocean">${esc(r.decision)}</span>` : '<span class="badge b-warn">pending</span>'}</td><td><a class="btn btn-ghost btn-xs" href="#/a/${esc(r.patent_asset_id)}">Review →</a></td></tr>`).join("")}</tbody></table></div></div></div>`;
-}
+
+
 
 /* ================================================================ AUDIT */
-async function viewAudit() {
-  main().innerHTML = loading();
-  const ev = await api("/v1/audit?limit=300");
-  const actions = [...new Set(ev.map((e) => e.action))].sort();
-  main().innerHTML = `<div class="wrap page"><div class="eyebrow">Governance</div><h2>Audit trail</h2>
-  <p class="muted">Searches, entity confirmations, score runs, inputs, overrides, exports and configuration changes — with actor, timestamp and before/after hashes.</p>
-  <div class="card"><div class="filters"><label>Action<select class="input" id="af"><option value="">All</option>${actions.map((a) => `<option>${esc(a)}</option>`).join("")}</select></label></div>
-  <div class="table-wrap"><table class="t"><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Object</th><th>Hashes</th><th>Detail</th></tr></thead><tbody id="ab"></tbody></table></div></div></div>`;
-  const draw = (f) => { $("#ab").innerHTML = ev.filter((e) => !f || e.action === f).map((e) => `<tr><td class="small nowrap">${fmtDT(e.timestamp)}</td><td class="small">${esc(e.actor)}</td><td><span class="badge b-ocean">${esc(e.action.replace(/_/g, " "))}</span></td><td class="xsmall"><span class="muted">${esc(e.object_type)}</span><br>${e.object_type === "patent_asset" ? `<a class="mono" href="#/a/${esc(e.object_id)}">${esc(e.object_id)}</a>` : e.object_type === "portfolio" ? `<a class="mono" href="#/p/${esc(e.object_id)}">${esc(e.object_id)}</a>` : `<span class="mono">${esc(e.object_id)}</span>`}</td><td class="mono xsmall">${e.before_hash ? esc(e.before_hash.slice(0, 8)) + "→" + esc((e.after_hash || "").slice(0, 8)) : "—"}</td><td class="xsmall" style="max-width:360px;word-break:break-word">${esc(JSON.stringify(e.detail).slice(0, 220))}</td></tr>`).join(""); };
-  draw("");
-  $("#af").addEventListener("change", (e) => draw(e.target.value));
-}
+
 
 /* ================================================================ SETTINGS */
 async function viewSettings() {
@@ -922,10 +941,10 @@ async function viewSettings() {
   <p class="muted" style="max-width:800px">Weights are initial product hypotheses, configurable and versioned — not scientifically validated until calibrated on expert-reviewed portfolios. Every change is audited and creates a new version.</p>
   <div class="grid g2">
     <div class="card"><div class="card-head"><h3>Default scoring model</h3><span class="badge b-ocean">${esc(def.name)} · v${def.version}</span></div>
-      <form id="wf">${m.dimensions.map((d) => `<div class="slider-row"><span>${esc(d.label)}</span><span class="help">${esc(d.missing_hint.slice(0, 40))}…</span><input class="input" style="padding:4px 6px" type="number" min="0" max="100" name="${d.key}" value="${def.weights[d.key]}" ${canW ? "" : "disabled"}></div>`).join("")}
-      <div class="row3" style="margin-top:14px">${[["strong_retain", "Strong retain ≥"], ["retain_monitor", "Retain/monitor ≥"], ["strategic_review", "Strategic review ≥"], ["coverage_min", "Min coverage %"], ["confidence_min", "Min confidence %"]].map(([k, l]) => `<label class="f"><span>${l}</span><input class="input" type="number" name="t_${k}" value="${def.thresholds[k]}" ${canW ? "" : "disabled"}></label>`).join("")}
+      <form id="wf">${m.dimensions.map((d) => `<div class="slider-row"><span>${esc(d.label)} ${tip(d.key)}</span><span class="help">${esc(DIM_HELP[d.key].slice(0, 60))}…</span><input class="input" style="padding:4px 6px" type="number" min="0" max="100" name="${d.key}" value="${def.weights[d.key]}" ${canW ? "" : "disabled"}></div>`).join("")}
+      <div class="row3" style="margin-top:14px">${[["retain", "Retain if score ≥"], ["review", "Review if score ≥ (below = Abandon)"], ["coverage_min", "Min coverage %"], ["confidence_min", "Min confidence %"]].map(([k, l]) => `<label class="f"><span>${l}</span><input class="input" type="number" name="t_${k}" value="${def.thresholds[k]}" ${canW ? "" : "disabled"}></label>`).join("")}
       <label class="f"><span>Deadline warning (days)</span><input class="input" type="number" name="g_deadline_warning_days" value="${def.gates.deadline_warning_days}" ${canW ? "" : "disabled"}></label></div>
-      ${canW ? '<button class="btn btn-ocean btn-sm">Save new model version</button>' : '<p class="xsmall muted">Only the tenant administrator can change default weights, thresholds and gates. Use Scenarios to explore alternatives.</p>'}</form></div>
+      ${canW ? '<button class="btn btn-ocean btn-sm">Save new model version</button>' : '<p class="xsmall muted">Your role cannot change the default model. Use Scenarios to explore alternatives.</p>'}</form></div>
     <div class="card"><div class="card-head"><h3>Cost assumptions</h3><span class="badge b-mute">${esc(ca.assumption_version)}</span></div>
       <form id="cf2"><div class="row2">
         <label class="f"><span>Annuity service fee per payment (USD)</span><input class="input" type="number" name="annuity_service_fee_per_payment" value="${esc(ca.annuity_service_fee_per_payment)}" ${canC ? "" : "disabled"}></label>
@@ -941,12 +960,11 @@ async function viewSettings() {
   </div>
   <div class="grid g2" style="margin-top:18px">
     <div class="card"><h3>Data connectors</h3><table class="t"><tbody>${m.connectors.map((c) => `<tr><td><b>${esc(c.name)}</b><div class="xsmall muted">${esc(c.note)}</div></td><td>${c.status === "active" ? '<span class="badge b-ok">active</span>' : '<span class="badge b-warn">not configured</span>'}</td></tr>`).join("")}</tbody></table></div>
-    <div class="card"><h3>Roles & permissions</h3><div class="table-wrap"><table class="t"><thead><tr><th>Role</th><th>Permissions</th></tr></thead><tbody>${Object.entries(m.roles).map(([k, r]) => `<tr><td><b>${esc(r.label)}</b>${S.me.role === k ? ' <span class="badge b-teal">you</span>' : ""}</td><td class="xsmall">${r.perms.map(esc).join(", ")}</td></tr>`).join("")}</tbody></table></div></div>
   </div></div>`;
   $("#wf").addEventListener("submit", async (e) => {
     e.preventDefault(); const fd = new FormData(e.target);
     const weights = Object.fromEntries(m.dimensions.map((d) => [d.key, Number(fd.get(d.key))]));
-    const thresholds = Object.fromEntries(["strong_retain", "retain_monitor", "strategic_review", "coverage_min", "confidence_min"].map((k) => [k, Number(fd.get("t_" + k))]));
+    const thresholds = Object.fromEntries(["retain", "review", "coverage_min", "confidence_min"].map((k) => [k, Number(fd.get("t_" + k))]));
     try { await api("/v1/scoring-configs/default", { method: "PUT", body: { weights, thresholds, gates: { deadline_warning_days: Number(fd.get("g_deadline_warning_days")) } } }); toast("New default model version saved. Re-run scoring on portfolios to apply."); viewSettings(); }
     catch (ex) { toast(ex.message, true); }
   });

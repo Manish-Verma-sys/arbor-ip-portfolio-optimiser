@@ -30,11 +30,10 @@ DEFAULT_WEIGHTS = {"commercial": 25, "claim_quality": 20, "competitive": 15, "st
                    "portfolio": 10, "licensing": 10, "future": 5}
 
 DEFAULT_THRESHOLDS = {
-    "strong_retain": 80,
-    "retain_monitor": 65,
-    "strategic_review": 45,
-    "coverage_min": 70,
-    "confidence_min": 50,
+    "retain": 65,          # score >= retain            -> Retain
+    "review": 45,          # review <= score < retain   -> Review (borderline value)
+    "coverage_min": 70,    # below -> Review (needs more evidence)
+    "confidence_min": 50,  # below -> Review (needs more evidence)
 }
 
 DEFAULT_GATES = {
@@ -43,24 +42,28 @@ DEFAULT_GATES = {
     "min_owner_confidence": 0.6,
 }
 
+# Four outcomes only. 'Review' always carries a reason so the user knows what to do next.
 RECOMMENDATIONS = {
-    "strong_retain": "Strong retain candidate",
-    "retain_monitor": "Retain / monitor",
-    "strategic_review": "Strategic review",
-    "abandonment_review_candidate": "Abandonment review candidate",
-    "insufficient_evidence": "Insufficient evidence",
-    "blocked": "Blocked — resolve gate",
-    "not_in_force": "Not in force — review family",
+    "retain": "Retain",
+    "review": "Review",
+    "abandon": "Abandon",
+    "not_in_force": "Not in force – review family",
+}
+
+REVIEW_REASONS = {
+    "borderline_value": "Borderline value — compare with family members and confirm business need",
+    "insufficient_evidence": "Needs more evidence — add the missing business inputs",
+    "data_conflict": "Data conflict — resolve ownership or legal status first",
+    "pending_application": "Pending application — prosecution review before any abandonment",
+    "obligation": "Licence, litigation or standards obligation — legal check required",
+    "family_dependency": "Low value but continuations depend on it — check family before dropping",
 }
 
 REQUIRED_HANDLING = {
-    "strong_retain": "Verify cost, ownership, status, family and strategic dependencies.",
-    "retain_monitor": "Review cost trends and refresh commercial evidence.",
-    "strategic_review": "Request missing business inputs; compare alternative assets and family-level protection.",
-    "abandonment_review_candidate": "Human-led legal and business review required; never automatically abandon.",
-    "insufficient_evidence": "Supply the missing inputs listed below before any portfolio decision.",
-    "blocked": "Resolve the blocking gate (ownership/status) before any recommendation can be issued.",
-    "not_in_force": "Confirm status with the official register; check reinstatement windows and remaining family protection.",
+    "retain": "Keep paying maintenance fees. Re-check cost and commercial evidence at the next renewal.",
+    "review": "Needs a human look before the next fee is due — see the reason and the missing inputs below.",
+    "abandon": "Low value for its cost. Candidate to let lapse at the next fee date — confirm with counsel first; nothing is abandoned automatically.",
+    "not_in_force": "Already expired, lapsed or abandoned. Check reinstatement windows and whether family members still protect the invention.",
 }
 
 MISSING_INPUT_HINTS = {
@@ -96,14 +99,12 @@ def weighted_score(ratings: dict, weights: dict) -> tuple[Optional[float], float
 
 def band(score: Optional[float], thr: dict) -> str:
     if score is None:
-        return "insufficient_evidence"
-    if score >= thr["strong_retain"]:
-        return "strong_retain"
-    if score >= thr["retain_monitor"]:
-        return "retain_monitor"
-    if score >= thr["strategic_review"]:
-        return "strategic_review"
-    return "abandonment_review_candidate"
+        return "review"
+    if score >= thr["retain"]:
+        return "retain"
+    if score >= thr["review"]:
+        return "review"
+    return "abandon"
 
 
 # ---------------------------------------------------------------- dimension rating rules
@@ -445,20 +446,30 @@ def score_asset(a: dict, ctx: dict, evidence: list[dict], analyst_inputs: dict, 
     gstat = gate_status(gates)
 
     score_band = band(score, thr)
-    if gstat == "BLOCK":
-        rec = "blocked"
-    elif a.get("status") in NOT_IN_FORCE:
+    codes = {g["code"] for g in gates}
+    reason = None
+    if a.get("status") in NOT_IN_FORCE:
         rec = "not_in_force"
+    elif gstat == "BLOCK":
+        rec, reason = "review", "data_conflict"
     elif coverage < thr["coverage_min"] or conf < thr["confidence_min"] or score is None:
-        rec = "insufficient_evidence"
+        rec, reason = "review", "insufficient_evidence"
     else:
         rec = score_band
-    # Abandonment candidates with live continuation children always need review
-    if rec == "abandonment_review_candidate" and ctx.get("family", {}).get("pending_children"):
-        for gt in gates:
-            if gt["code"] == "FAMILY_DEPENDENCY":
-                gt["severity"] = "review"
-        gstat = gate_status(gates)
+        if rec == "review":
+            reason = "borderline_value"
+        elif rec == "abandon":
+            # Spec hard gates: never suggest abandoning these without a human check
+            if "PENDING_PROSECUTION" in codes:
+                rec, reason = "review", "pending_application"
+            elif any(c.startswith("OBLIGATION_") for c in codes):
+                rec, reason = "review", "obligation"
+            elif ctx.get("family", {}).get("pending_children"):
+                rec, reason = "review", "family_dependency"
+                for gt in gates:
+                    if gt["code"] == "FAMILY_DEPENDENCY":
+                        gt["severity"] = "review"
+                gstat = gate_status(gates)
 
     # ---- explanation
     contrib = []
@@ -480,7 +491,7 @@ def score_asset(a: dict, ctx: dict, evidence: list[dict], analyst_inputs: dict, 
         hi, _ = weighted_score({**ratings, m["dimension"]: 5}, weights)
         what_changes.append(f"Supplying {m['label'].lower()} evidence would move the score into the range {lo:.0f}–{hi:.0f} and raise coverage by {m['weight']} points.")
     if score is not None:
-        bounds = [(thr["strong_retain"], "Strong retain"), (thr["retain_monitor"], "Retain / monitor"), (thr["strategic_review"], "Strategic review")]
+        bounds = [(thr["retain"], "Retain"), (thr["review"], "Review / Abandon")]
         nearest = min(bounds, key=lambda b: abs(score - b[0]))
         what_changes.append(f"Score is {abs(score - nearest[0]):.1f} points {'above' if score >= nearest[0] else 'below'} the '{nearest[1]}' threshold ({nearest[0]}).")
     sens = sensitivity(ratings, weights, thr) if score is not None else []
@@ -493,6 +504,7 @@ def score_asset(a: dict, ctx: dict, evidence: list[dict], analyst_inputs: dict, 
         "dimension_scores": dims,
         "strategic_score": score,
         "score_band": score_band,
+        "review_reason": reason,
         "data_coverage": coverage,
         "evidence_confidence": conf,
         "confidence_notes": conf_notes,
@@ -506,6 +518,8 @@ def score_asset(a: dict, ctx: dict, evidence: list[dict], analyst_inputs: dict, 
             "what_could_change": what_changes,
             "sensitivity": sens,
             "required_handling": REQUIRED_HANDLING[rec],
+            "review_reason": reason,
+            "review_reason_label": REVIEW_REASONS.get(reason),
         },
     }
 

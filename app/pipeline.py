@@ -242,7 +242,10 @@ def result_row(a: PatentAsset, s: PatentScore, decision: ReviewDecision | None =
         "filing_date": a.filing_date.isoformat() if a.filing_date else None,
         "expiry_estimate": a.expiry_estimate.isoformat() if a.expiry_estimate else None,
         "strategic_score": s.strategic_score, "data_coverage": s.data_coverage, "evidence_confidence": s.evidence_confidence,
-        "recommendation": s.recommendation, "recommendation_label": RECOMMENDATIONS[s.recommendation],
+        "recommendation": s.recommendation, "recommendation_label": RECOMMENDATIONS.get(s.recommendation, s.recommendation),
+        "review_reason": (s.explanation or {}).get("review_reason"),
+        "review_reason_label": (s.explanation or {}).get("review_reason_label"),
+        "ratings": {k: v.get("rating") for k, v in (s.dimension_scores or {}).items()},
         "gate_status": s.gate_status, "gate_codes": [g["code"] for g in s.gate_reasons],
         "cost_3y": totals.get("3", {}).get("total"), "cost_5y": totals.get("5", {}).get("total"),
         "cost_unknown": (s.cost or {}).get("unknown", False),
@@ -257,14 +260,13 @@ def result_row(a: PatentAsset, s: PatentScore, decision: ReviewDecision | None =
 
 # ------------------------------------------------------------------ scenarios & budget
 
-REC_ORDER = {"abandonment_review_candidate": 0, "strategic_review": 1, "retain_monitor": 2, "strong_retain": 3,
-             "insufficient_evidence": 4, "not_in_force": 5, "blocked": 6}
+REC_ORDER = {"abandon": 0, "review": 1, "retain": 2, "not_in_force": 3}
 
 
 def budget_shortlist(rows: list[dict], target: float, horizon: str = "5") -> dict:
     """Pick review candidates whose forward cost would close the budget gap. Human review only; never abandons."""
     key = "cost_5y" if horizon == "5" else "cost_3y"
-    cands = [r for r in rows if r["recommendation"] in ("abandonment_review_candidate", "strategic_review")
+    cands = [r for r in rows if (r["recommendation"] == "abandon" or (r["recommendation"] == "review" and r.get("review_reason") == "borderline_value"))
              and r.get(key) and float(r[key]) > 0 and r["gate_status"] != "BLOCK"]
     cands.sort(key=lambda r: (REC_ORDER[r["recommendation"]], r["strategic_score"] or 0, -float(r[key])))
     picked, total = [], 0.0
@@ -275,7 +277,7 @@ def budget_shortlist(rows: list[dict], target: float, horizon: str = "5") -> dic
         total += float(r[key])
     return {"target": target, "horizon_years": int(horizon), "identified_savings": round(total, 2),
             "met": total >= target, "candidates": picked,
-            "note": "Shortlist for human review only. Savings are forecast official + professional costs avoided if a reviewer later approves abandonment; family dependencies must be checked."}
+            "note": "Shortlist only — Abandon outcomes first, then borderline Review assets. Savings are forecast official + professional costs avoided if each is confirmed and allowed to lapse; check family dependencies first."}
 
 
 def compare(base_rows: list[dict], scen_rows: list[dict]) -> dict:
@@ -290,7 +292,7 @@ def compare(base_rows: list[dict], scen_rows: list[dict]) -> dict:
 
     def cost_of(rows, recs):
         return round(sum(float(x["cost_5y"]) for x in rows if x["recommendation"] in recs and x["cost_5y"]), 2)
-    abandon = ("abandonment_review_candidate",)
+    abandon = ("abandon",)
     return {
         "changed": changes,
         "changed_families": len({c["family_id"] for c in changes}),

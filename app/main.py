@@ -1,4 +1,4 @@
-"""Arbor IP API (spec section 10) + static web app."""
+"""Portfolio Maintenance Calculator API + static web app."""
 from __future__ import annotations
 
 import os
@@ -27,7 +27,7 @@ from .pipeline import (CUSTOMER_CSV_COLUMNS, PORTFOLIO_CSV_COLUMNS, apply_custom
                        config_dict, ensure_default_config, latest_run, new_id, parse_portfolio_csv, persist_generated,
                        preview_rows, result_row, run_scoring, today)
 from .scoring import (DEFAULT_GATES, DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS, DIMENSIONS, MISSING_INPUT_HINTS, RECOMMENDATIONS,
-                      REQUIRED_HANDLING, snapshot_hash, validate_weights)
+                      REQUIRED_HANDLING, REVIEW_REASONS, snapshot_hash, validate_weights)
 from .synthetic import generate
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
@@ -52,7 +52,8 @@ ROLES = {
     "counsel": {"label": "Patent counsel", "perms": {"score", "decide", "decide_abandon", "inputs", "resolve", "export"}},
     "analyst": {"label": "Portfolio analyst", "perms": {"search", "score", "scenario", "inputs", "resolve", "export"}},
     "finance": {"label": "Finance partner", "perms": {"scenario", "cost_config", "export"}},
-    "tenant_admin": {"label": "Tenant administrator", "perms": {"search", "score", "scenario", "cost_config", "weights_config", "export", "admin"}},
+    "tenant_admin": {"label": "Portfolio manager", "perms": {"search", "score", "scenario", "batch", "decide", "decide_abandon", "inputs", "resolve",
+                                                             "cost_config", "weights_config", "export", "admin"}},
     "viewer": {"label": "Read-only viewer", "perms": {"export"}},
 }
 
@@ -61,7 +62,7 @@ DEMO_USERS = [
     ("u_counsel", "tenant_demo", "Rahul Sethi", "counsel"),
     ("u_analyst", "tenant_demo", "Neha Bansal", "analyst"),
     ("u_finance", "tenant_demo", "Vikram Rao", "finance"),
-    ("u_admin", "tenant_demo", "Tenant Admin", "tenant_admin"),
+    ("u_admin", "tenant_demo", "Portfolio Manager", "tenant_admin"),
     ("u_viewer", "tenant_demo", "Guest Viewer", "viewer"),
     ("u_beta", "tenant_beta", "Beta Tenant Manager", "ip_manager"),
 ]
@@ -200,6 +201,7 @@ def meta():
         "app": APP_NAME, "version": APP_VERSION, "scoring_version": SCORING_VERSION, "disclaimer": DISCLAIMER,
         "dimensions": [{"key": k, "label": l, "default_weight": DEFAULT_WEIGHTS[k], "missing_hint": MISSING_INPUT_HINTS[k]} for k, l in DIMENSIONS],
         "recommendations": [{"key": k, "label": v, "handling": REQUIRED_HANDLING[k]} for k, v in RECOMMENDATIONS.items()],
+        "review_reasons": REVIEW_REASONS,
         "default_thresholds": DEFAULT_THRESHOLDS, "default_gates": DEFAULT_GATES,
         "reason_codes": [{"key": k, "label": v} for k, v in REASON_CODES.items()],
         "decisions": [{"key": k, "label": v} for k, v in DECISIONS.items()],
@@ -652,7 +654,7 @@ def patent_detail(aid: str, score_run_id: Optional[str] = None, user: User = Dep
         "score_run": {"id": run.id, "as_of_date": run.as_of_date.isoformat(), "config": run.config_snapshot, "scoring_version": run.scoring_version,
                       "data_snapshot_hash": run.data_snapshot_hash} if run else None,
         "score": {"strategic_score": score.strategic_score, "data_coverage": score.data_coverage, "evidence_confidence": score.evidence_confidence,
-                  "recommendation": score.recommendation, "recommendation_label": RECOMMENDATIONS[score.recommendation],
+                  "recommendation": score.recommendation, "recommendation_label": RECOMMENDATIONS.get(score.recommendation, score.recommendation),
                   "gate_status": score.gate_status, "gate_reasons": score.gate_reasons, "dimension_scores": score.dimension_scores,
                   "explanation": score.explanation, "cost": score.cost} if score else None,
         "family": [{"id": m.id, "publication_number": m.publication_number, "jurisdiction": m.jurisdiction, "status": m.status,
@@ -850,7 +852,7 @@ def review_decision(aid: str, body: DecisionIn, user: User = Depends(current_use
     if body.decision in ("accept", "override") and len(body.notes.strip()) < 3 and body.reason_code == "OTHER":
         raise HTTPException(400, "Reason 'Other' requires notes.")
     target = body.override_recommendation if body.decision == "override" else sc.recommendation
-    if body.decision in ("accept", "override") and target == "abandonment_review_candidate" and "decide_abandon" not in ROLES[user.role]["perms"]:
+    if body.decision in ("accept", "override") and target == "abandon" and "decide_abandon" not in ROLES[user.role]["perms"]:
         raise HTTPException(403, "Only patent counsel can approve an abandonment-review outcome.")
     # Mandatory freshness recheck of critical status / deadline before a final decision (FR-16)
     fresh = {"rechecked_at": utcnow().isoformat(), "status": a.status, "conflict": bool(a.status_conflict),
@@ -1092,7 +1094,7 @@ def export(rid: str, fmt: str, recommendation: Optional[str] = None, user: User 
     run = get_run(db, user, rid)
     p = db.get(Portfolio, run.portfolio_id)
     rows = _export_rows(db, run, recommendation)
-    fname = f"arbor_{p.name.split()[0].lower()}_{run.as_of_date}_{run.id}"
+    fname = f"portfolio_maintenance_{p.name.split()[0].lower()}_{run.as_of_date}_{run.id}"
     audit(db, user, "export", "score_run", run.id, format=fmt, rows=len(rows))
     db.commit()
     if fmt == "csv":

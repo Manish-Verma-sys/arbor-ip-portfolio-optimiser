@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: arbor-ip
+    name: portfolio-maintenance-calculator
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -11,4 +11,4 @@ services:
         value: 3.12.7
       # Optional: point at a Render Postgres instance for durable reviews/audit.
       # - key: DATABASE_URL
-      #   fromDatabase: { name: arbor-ip-db, property: connectionString }
+      #   fromDatabase: { name: portfolio-maintenance-calculator-db, property: connectionString }

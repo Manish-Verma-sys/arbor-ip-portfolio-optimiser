@@ -7,7 +7,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 def _database_url() -> str:
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
-        path = os.environ.get("SQLITE_PATH", os.path.join(os.path.dirname(__file__), "..", "arbor.db"))
+        path = os.environ.get("SQLITE_PATH", os.path.join(os.path.dirname(__file__), "..", "pmc.db"))
         return f"sqlite:///{os.path.abspath(path)}"
     # Render/Heroku style URLs
     if url.startswith("postgres://"):
