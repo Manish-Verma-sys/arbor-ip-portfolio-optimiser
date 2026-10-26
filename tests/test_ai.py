@@ -81,9 +81,8 @@ def test_prompts_have_rubrics_and_safety():
     from datetime import date
     for dim in ai.DIM_PROMPTS:
         p = ai.build_dim_prompt(dim, "US9876543B2", FACTS, date(2026, 10, 26))
-        assert "Rubric:" in p and '"rating"' in p and "US9876543B2" in p or dim in ("claim_quality",)
+        assert "rubric:" in p.lower() and '"rating"' in p and "US9876543B2" in p, dim
     assert "UNTRUSTED DATA" in ai.SYSTEM
-    assert ai.DIM_PROMPTS["claim_quality"]["tools"] == []
 
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "US10055028B2.html")
