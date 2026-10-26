@@ -90,15 +90,16 @@ def _synthetic_candidates(name: str, country: str | None) -> list[dict]:
     clean = name.strip().title() if name.strip().islower() else name.strip()
     base_id = "ent_syn_" + hashlib.sha256(normalise(name).encode()).hexdigest()[:10]
     cands = [{
-        "entity_id": base_id, "entity_type": "company", "canonical_name": clean,
+        "entity_id": base_id, "entity_type": "company", "canonical_name": f"{clean} (synthetic demo)",
         "country": (country or "US").upper(), "identifiers": {"assignee_id": f"SYN-A-{h % 900000 + 100000}"},
         "aliases": [], "former_names": [], "related_entities": [], "technology": TECH[tech]["label"],
         "match_confidence": 0.74,
         "match_evidence": ["Generated demo entity — no live patent-office connector is configured",
+                           "All patents, numbers and inputs are FICTIONAL and do not describe the real company of this name",
                            "Portfolio will be SYNTHETIC public-data-only (no customer inputs)"],
         "data_mode": "synthetic", "customer_data": False, "tech_key": tech,
     }, {
-        "entity_id": base_id + "_h", "entity_type": "company", "canonical_name": f"{clean} Holdings",
+        "entity_id": base_id + "_h", "entity_type": "company", "canonical_name": f"{clean} Holdings (synthetic demo)",
         "country": "US", "identifiers": {"assignee_id": f"SYN-A-{(h // 7) % 900000 + 100000}"},
         "aliases": [], "former_names": [], "related_entities": [], "technology": TECH[techs[(h // 3) % len(techs)]]["label"],
         "match_confidence": 0.52,
@@ -143,7 +144,7 @@ def resolve_inventor(name: str, organisation: str | None = None, country: str | 
         tech = list(TECH)[h % len(TECH)]
         out.append({
             "entity_id": "inv_syn_" + hashlib.sha256(normalise(name).encode()).hexdigest()[:10],
-            "entity_type": "inventor", "canonical_name": name.strip(), "country": (country or "US").upper(),
+            "entity_type": "inventor", "canonical_name": f"{name.strip()} (synthetic demo)", "country": (country or "US").upper(),
             "affiliations": [{"org": organisation or "Unknown employer", "from": 2012, "to": None}],
             "co_inventors": [], "technology": TECH[tech]["label"], "match_confidence": 0.6,
             "match_evidence": ["Generated demo inventor — no live connector configured"], "data_mode": "synthetic",
