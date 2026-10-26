@@ -23,12 +23,13 @@ from .exports import to_csv, to_pdf, to_xlsx
 from .models import (AuditEvent, CostActual, DimensionInput, EvidenceItem, LegalStatusSnapshot, OwnershipEvent, PatentAsset,
                      PatentFamily, PatentScore, Portfolio, PortfolioSearch, ReviewBatch, ReviewDecision, ScoreRun,
                      ScoringConfig, Tenant, User, utcnow)
-from .pipeline import (CUSTOMER_CSV_COLUMNS, PORTFOLIO_CSV_COLUMNS, apply_customer_csv, budget_shortlist, compare,
+from .pipeline import (CUSTOMER_CSV_COLUMNS, filter_generated, PORTFOLIO_CSV_COLUMNS, apply_customer_csv, budget_shortlist, compare,
                        config_dict, ensure_default_config, latest_run, new_id, parse_portfolio_csv, persist_generated,
                        preview_rows, result_row, run_scoring, today)
 from .scoring import (DEFAULT_GATES, DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS, DIMENSIONS, MISSING_INPUT_HINTS, RECOMMENDATIONS,
                       REQUIRED_HANDLING, REVIEW_REASONS, snapshot_hash, validate_weights)
 from .synthetic import generate
+from . import ai
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
 JOB_DELAY = float(os.environ.get("JOB_STEP_DELAY", "0.6"))
@@ -253,6 +254,10 @@ class SearchIn(BaseModel):
     organisation: Optional[str] = None
     co_inventor: Optional[str] = None
     as_of_date: Optional[date] = None
+    filing_from: Optional[date] = None
+    filing_to: Optional[date] = None
+    legal_status: list[str] = []          # active, pending, expired, lapsed, abandoned
+    publication_types: list[str] = []     # active, dead, pending
 
 
 def search_dict(s: PortfolioSearch) -> dict:
@@ -320,7 +325,12 @@ def _discover_job(sid: str, entity: dict, scope: dict, user_id: str, entity_size
         _set(db, s, "DISCOVERING", 20, "Retrieving applications, grants, publications and assignment records")
         time.sleep(JOB_DELAY)
         gen = generate(entity, today(), scope)
-        _set(db, s, "NORMALISING", 45, f"Retrieved {len(gen['assets'])} records; de-duplicating and grouping {len(gen['families'])} families")
+        found = len(gen["assets"])
+        gen, dropped = filter_generated(gen, s.params or {})
+        if not gen["assets"]:
+            raise ValueError("NO_MATCH")
+        msg = f"Retrieved {found} records" + (f"; {dropped} excluded by your filters" if dropped else "")
+        _set(db, s, "NORMALISING", 45, f"{msg}; de-duplicating and grouping {len(gen['families'])} families")
         time.sleep(JOB_DELAY)
         pf = persist_generated(db, user.tenant_id, entity["canonical_name"] + (" — inventor view" if entity["entity_type"] == "inventor" else ""),
                                entity, gen, scope, entity["entity_type"])
@@ -341,7 +351,9 @@ def _discover_job(sid: str, entity: dict, scope: dict, user_id: str, entity_size
     except Exception as ex:  # noqa: BLE001
         db.rollback()
         s = db.get(PortfolioSearch, sid)
-        s.status, s.error = "FAILED", f"Discovery failed: {type(ex).__name__}. Retry the search."
+        s.status = "FAILED"
+        s.error = ("No patents matched your filters (date range, legal status, publication type). Widen them and search again."
+                   if str(ex) == "NO_MATCH" else f"Discovery failed: {type(ex).__name__}. Retry the search.")
         db.commit()
     finally:
         db.close()
@@ -365,6 +377,183 @@ def confirm_entity(sid: str, body: ConfirmIn, user: User = Depends(current_user)
     db.commit()
     threading.Thread(target=_discover_job, args=(s.id, ent, scope, user.id, body.entity_size), daemon=True).start()
     return search_dict(s)
+
+
+# ------------------------------------------------------------------ live patent-number pathway (Claude API)
+
+@app.get("/v1/ai/status")
+def ai_status():
+    return {"configured": ai.configured(), "model": ai.model_name(), "max_patents": ai.MAX_PATENTS,
+            "note": None if ai.configured() else "Set ANTHROPIC_API_KEY on the server to enable live patent analysis."}
+
+
+class PatentListIn(BaseModel):
+    numbers: str = Field(min_length=3, max_length=20000)
+    name: Optional[str] = None
+    entity_size: str = Field(default="auto", pattern="^(auto|large|small|micro)$")
+
+
+def _start_patent_job(db, user, numbers: list[str], rejected: list[str], name: Optional[str], entity_size: str):
+    if not ai.configured():
+        raise HTTPException(409, "Live analysis is not configured: the server has no ANTHROPIC_API_KEY.")
+    if not numbers:
+        raise HTTPException(400, "No valid US patent numbers found. Use formats like US10123456B2, 10,123,456 or US20210123456A1."
+                            + (f" Not recognised: {', '.join(rejected[:5])}" if rejected else ""))
+    if len(numbers) > ai.MAX_PATENTS:
+        raise HTTPException(400, f"Please analyse at most {ai.MAX_PATENTS} patents per run (you entered {len(numbers)}).")
+    s = PortfolioSearch(id=new_id("ps"), tenant_id=user.tenant_id, query_type="patents", name=name or f"{len(numbers)} patent(s)",
+                        params={"numbers": numbers, "rejected": rejected, "entity_size": entity_size}, status="CREATED", progress=3,
+                        candidates=[], created_by=user.id,
+                        messages=[{"t": utcnow().isoformat(), "msg": f"{len(numbers)} US patent number(s) accepted"
+                                   + (f"; {len(rejected)} not recognised: {', '.join(rejected[:5])}" if rejected else "")}])
+    db.add(s)
+    audit(db, user, "start_patent_analysis", "portfolio_search", s.id, numbers=numbers, model=ai.model_name())
+    db.commit()
+    threading.Thread(target=_patent_job, args=(s.id, user.id), daemon=True).start()
+    return search_dict(s)
+
+
+def _patent_job(sid: str, user_id: str):
+    db = SessionLocal()
+    lock = threading.Lock()
+    try:
+        s = db.get(PortfolioSearch, sid)
+        user = db.get(User, user_id)
+        nums = s.params["numbers"]
+        _set(db, s, "DISCOVERING", 8, f"Analysing {len(nums)} patent(s) live with {ai.model_name()} (web fetch + web search)")
+        done = {"n": 0}
+        results, failed = [], []
+        log = []
+
+        def step(m):
+            with lock:
+                log.append(m)
+
+        def one(n):
+            try:
+                r = ai.analyse_patent(n, today(), step)
+                step(f"{n}: done")
+                return r
+            except Exception as ex:  # noqa: BLE001
+                step(f"{n}: could not be analysed ({type(ex).__name__}: {str(ex)[:120]})")
+                return {"number": n, "error": str(ex)}
+            finally:
+                with lock:
+                    done["n"] += 1
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futs = [pool.submit(one, n) for n in nums]
+            while True:
+                fin = all(f.done() for f in futs)
+                with lock:
+                    pending, log[:] = list(log), []
+                    pct = 10 + int(75 * done["n"] / len(nums))
+                if pending:
+                    s.messages = list(s.messages or []) + [{"t": utcnow().isoformat(), "msg": m} for m in pending]
+                    s.progress = pct
+                    s.status = "ENRICHING" if done["n"] else "DISCOVERING"
+                    db.commit()
+                if fin:
+                    break
+                time.sleep(1.0)
+            for f in futs:
+                r = f.result()
+                (failed if r.get("error") else results).append(r)
+        if not results:
+            raise ValueError("ALL_FAILED")
+        _set(db, s, "NORMALISING", 88, "Building portfolio from verified records")
+        size = s.params.get("entity_size", "auto")
+        assets = [ai.to_asset(r, size, today()) for r in results]
+        pubs = {a["publication_number"]: i for i, a in enumerate(assets)}
+        fams, fam_of = [], {}
+        for i, a in enumerate(assets):
+            parent = a.get("parent_publication")
+            parent_n = ai.normalize_number(parent) if parent else None
+            if parent_n in pubs and pubs[parent_n] in fam_of:
+                fam_of[i] = fam_of[pubs[parent_n]]
+            else:
+                fam_of[i] = len(fams)
+                fams.append({"provider_family_id": f"FAM-{a['publication_number']}", "family_type": "US family (public record)", "source_id": "Google Patents (live)"})
+            a["family_idx"] = fam_of[i]
+        owners = sorted({a["current_owner"] for a in assets if a["current_owner"]})
+        ent = {"entity_id": new_id("ent_live"), "entity_type": "company", "canonical_name": owners[0] if len(owners) == 1 else "Multiple owners",
+               "data_mode": "live_ai", "customer_data": False}
+        usage = {k: sum((r.get("usage") or {}).get(k, 0) for r in results) for k in ("input_tokens", "output_tokens", "web_searches")}
+        pf = persist_generated(db, user.tenant_id, s.name, ent, {"families": fams, "assets": assets}, {"ownership_scope": "patent_list"},
+                               "patents", data_mode="live_ai",
+                               sources=[f"Google Patents / USPTO public records (live, {today().isoformat()})",
+                                        f"Web research by {ai.model_name()} (web search + web fetch)",
+                                        f"Usage: {usage['input_tokens']:,} input / {usage['output_tokens']:,} output tokens, {usage['web_searches']} web searches"])
+        if failed:
+            pf.unavailable_sources = [f"{r['number']}: could not be analysed" for r in failed]
+        db.flush()
+        _set(db, s, "SCORING", 94, "Calculating costs, scores and outcomes")
+        run = run_scoring(db, pf, ensure_default_config(db, user.tenant_id), user.id)
+        audit(db, user, "create_portfolio", "portfolio", pf.id, source="live_ai", numbers=[r["number"] for r in results],
+              failed=[r["number"] for r in failed], usage=usage, score_run=run.id)
+        s.portfolio_id = pf.id
+        db.commit()
+        _set(db, s, "PARTIAL" if failed else "REVIEW_READY", 100,
+             f"Done: {len(results)} analysed" + (f", {len(failed)} failed" if failed else ""))
+    except Exception as ex:  # noqa: BLE001
+        db.rollback()
+        s = db.get(PortfolioSearch, sid)
+        s.status = "FAILED"
+        s.error = ("None of the patents could be analysed. Check the numbers, or check the API key and its credit balance."
+                   if str(ex) == "ALL_FAILED" else f"Live analysis failed: {type(ex).__name__}. Please retry.")
+        db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/v1/patent-analyses")
+def start_patent_analysis(body: PatentListIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require(user, "search")
+    nums, rejected = ai.extract_numbers(body.numbers)
+    return _start_patent_job(db, user, nums, rejected, body.name, body.entity_size)
+
+
+@app.post("/v1/patent-analyses/upload")
+async def upload_patent_list(file: UploadFile = File(...), name: str = Form(""), entity_size: str = Form("auto"),
+                             user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require(user, "search")
+    raw = await file.read()
+    if len(raw) > 5_000_000:
+        raise HTTPException(400, "File too large (max 5 MB)")
+    try:
+        nums, rejected = ai.numbers_from_file(file.filename or "", raw)
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(400, f"Could not read the file: {type(ex).__name__}. Upload .xlsx or .csv.")
+    return _start_patent_job(db, user, nums, rejected, name or (file.filename or "Imported patents"), entity_size)
+
+
+@app.post("/v1/patent-analyses/parse")
+async def parse_patent_list(file: Optional[UploadFile] = File(None), numbers: str = Form("")):
+    """Preview which numbers will be analysed (no API calls)."""
+    if file is not None:
+        raw = await file.read()
+        nums, rejected = ai.numbers_from_file(file.filename or "", raw)
+    else:
+        nums, rejected = ai.extract_numbers(numbers)
+    return {"valid": nums, "rejected": rejected, "max": ai.MAX_PATENTS}
+
+
+@app.get("/v1/templates/patent-numbers.xlsx")
+def patent_numbers_template():
+    import io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Patents"
+    ws.append(["patent_number", "notes (optional)"])
+    for n in ("US10000000B2", "US 9,999,999 B2", "US20210123456A1"):
+        ws.append([n, ""])
+    ws.column_dimensions["A"].width = 24
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename=patent_numbers_template.xlsx"})
 
 
 # ------------------------------------------------------------------ CSV import

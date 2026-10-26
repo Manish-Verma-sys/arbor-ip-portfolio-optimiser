@@ -295,8 +295,13 @@ def derive_ratings(a: dict, ctx: dict, analyst_inputs: dict, as_of: date) -> dic
         "licensing": _rate_licensing(a),
         "future": _rate_future(a, as_of),
     }
+    ai_r = (a.get("signals") or {}).get("ai_ratings") or {}
     for dim, (rating, rationale, basis) in raw.items():
         entry = {"rating": rating, "rationale": rationale, "basis": basis, "derived_rating": rating}
+        air = ai_r.get(dim)
+        if air is not None and (air.get("rating") is not None or rating is None):
+            entry.update({"rating": air.get("rating"), "basis": "ai", "ai_confidence": air.get("confidence"),
+                          "rationale": f"AI-assessed from public sources: {air.get('rationale', '')}"})
         ai = analyst_inputs.get(dim)
         if ai is not None:
             entry.update({"rating": ai["rating"], "basis": "analyst",
@@ -330,6 +335,8 @@ def evidence_confidence(dims: dict, evidence: list[dict], weights: dict, a: dict
             continue
         if info["basis"] == "analyst":
             q = 0.75
+        elif info["basis"] == "ai" and not by_dim.get(d):
+            q = 0.45 * (info.get("ai_confidence") or 0.5) + 0.25
         else:
             qs = by_dim.get(d)
             q = sum(qs) / len(qs) if qs else 0.45

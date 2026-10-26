@@ -101,11 +101,12 @@ def _build(r, owner, tech_key, n_fam, as_of, customer_data, subs, inventor_focus
     special = {"grace": 0, "imminent": 1, "conflict": 2, "chain_gap": 3, "stale": 4}
 
     for fi in range(n_fam):
+        value = r.betavariate(1.1, 1.1)  # latent 'true worth' of the invention, drives all signals
         fam_id = f"FAM-S{r.randint(100000, 999999)}"
         families.append({"provider_family_id": fam_id, "family_type": "extended (priority-linked)", "source_id": SRC_USPTO})
         cpc, (cpc_label, trend) = cpcs[fi % len(cpcs)] if fi < len(cpcs) else r.choice(cpcs)
         title = titles[fi % len(titles)] if fi < len(titles) else f"{r.choice(titles)} — improved variant"
-        priority = _rand_date(r, date(2006, 1, 1), date(2024, 3, 1))
+        priority = _rand_date(r, date(2003, 6, 1), date(2024, 3, 1))
         if fi == special["grace"]:
             priority = add_months(as_of, -(90 + 30 + 2))
         elif fi == special["imminent"]:
@@ -164,39 +165,11 @@ def _build(r, owner, tech_key, n_fam, as_of, customer_data, subs, inventor_focus
             appno = f"{r.choice([15, 16, 17, 18])}/S{r.randint(100000, 999999)}"
             a = _asset(r, tech, cpc, cpc_label, trend, title if rel == "original" else title + " (continuation)",
                        pub, appno, "US", kind, fdate, priority, gdate, exp, status, rel, inventors,
-                       original_applicant, owner, sub, as_of, customer_data, standards, fi)
+                       original_applicant, owner, sub, as_of, customer_data, standards, fi, value=value)
             a["family_idx"] = fi
             if rel == "continuation":
                 a["parent_publication"] = fam_assets[0]["publication_number"]
             fam_assets.append(a)
-        # foreign members
-        for jur, src, p in (("EP", SRC_EPO, 0.42), ("CN", SRC_CNIPA, 0.2)):
-            if r.random() < p and fam_assets[0]["grant_date"]:
-                fgr = add_months(filing, r.randint(30, 60))
-                if fgr > as_of:
-                    st, fgr2, kind = "pending", None, "A1"
-                else:
-                    exp = expiry_estimate(filing)
-                    st = "expired" if exp <= as_of else r.choice(["active", "active", "active", "lapsed"])
-                    fgr2, kind = fgr, ("B1" if jur == "EP" else "B")
-                num = f"{jur}-S{r.randint(1000000, 3999999)}-{kind}"
-                a = _asset(r, tech, cpc, cpc_label, trend, title, num, f"{jur}S{r.randint(10000000, 99999999)}.{r.randint(1, 9)}",
-                           jur, kind, filing, priority, fgr2, expiry_estimate(filing), st, "foreign counterpart",
-                           inventors, original_applicant, owner, sub, as_of, customer_data, standards, fi, source=src)
-                a["family_idx"] = fi
-                fam_assets.append(a)
-        # Business inputs describe the invention, so foreign counterparts inherit them from the US parent
-        parent = fam_assets[0]
-        if parent.get("product_mappings") is not None or parent.get("customer_inputs"):
-            for m in fam_assets[1:]:
-                if m["jurisdiction"] == "US":
-                    continue
-                m["product_mappings"] = [dict(x) for x in (parent["product_mappings"] or [])] if parent["product_mappings"] is not None else None
-                m["customer_inputs"] = dict(parent["customer_inputs"])
-                m["signals"]["licensing_history"] = parent["signals"].get("licensing_history")
-                for e in parent["evidence"]:
-                    if e["dimension"] in ("commercial", "strategic", "licensing") and e["evidence_type"] in ("product_mapping", "strategy_tag", "licensing_register"):
-                        m["evidence"].append({**e, "source_name": e["source_name"] + " (inherited from US family member)", "directness": round(e["directness"] * 0.85, 2)})
         # special cases
         if fi == special["conflict"]:
             us = fam_assets[0]
@@ -224,51 +197,48 @@ def _build(r, owner, tech_key, n_fam, as_of, customer_data, subs, inventor_focus
 
 
 def _asset(r, tech, cpc, cpc_label, trend, title, pub, appno, jur, kind, filing, priority, grant, exp, status, rel,
-           inventors, original_applicant, owner, sub, as_of, customer_data, standards, fi, source=SRC_USPTO):
+           inventors, original_applicant, owner, sub, as_of, customer_data, standards, fi, source=SRC_USPTO, value=0.5):
     now = datetime.combine(as_of, datetime.min.time()) + timedelta(hours=6)
     age_years = max(0.5, (as_of - (grant or filing)).days / 365.25)
     med = max(1, int(round(age_years * 1.4)))
-    quality = r.random()
-    fwd = int(max(0, r.gauss(med * (0.5 + 2.2 * quality), med * 0.6))) if grant else int(r.random() * 2)
-    comp_names = r.sample(tech["competitors"], k=r.randint(0, 3)) if quality > 0.35 else []
-    comp_cit = len(comp_names) + (r.randint(0, 3) if comp_names else 0)
+    q = max(0.0, min(1.0, value + r.uniform(-0.12, 0.12)))  # asset-level value around the family value
+    hi, lo = q > 0.62, q < 0.38
+    fwd = int(max(0, r.gauss(med * (0.3 + 2.6 * q), med * 0.4))) if grant else r.randint(0, 2)
+    comp_names = r.sample(tech["competitors"], k=(r.randint(2, 4) if hi else r.randint(0, 2) if not lo else 0))
+    comp_cit = len(comp_names) + (r.randint(1, 4) if hi else 0)
+    pick = lambda good, mid, bad: r.choice(good if hi else bad if lo else mid)
     signals = {
-        "independent_claims": r.choice([1, 2, 2, 3, 3, 4, 5]),
+        "independent_claims": pick([3, 4, 5], [2, 3], [1, 1, 2]),
         "total_claims": r.randint(10, 30),
-        "claim1_words": r.randint(70, 280),
-        "claim_scope_reduction": round(r.uniform(0, 0.65), 2) if grant else round(r.uniform(0, 0.3), 2),
-        "rce_count": r.choice([0, 0, 0, 1, 1, 2, 3]),
+        "claim1_words": int(r.uniform(70, 125) if hi else r.uniform(200, 290) if lo else r.uniform(110, 210)),
+        "claim_scope_reduction": round(r.uniform(0, 0.25) if hi else r.uniform(0.42, 0.7) if lo else r.uniform(0.15, 0.45), 2),
+        "rce_count": pick([0, 0, 1], [0, 1, 1, 2], [2, 3]),
         "office_actions": r.randint(1, 5),
         "expected_remaining_office_actions": round(r.uniform(0.5, 2.5), 1) if status == "pending" else 0,
         "forward_citations": fwd,
         "cohort_citation_median": med,
-        "competitor_citations": comp_cit if r.random() > 0.15 else None,
+        "competitor_citations": comp_cit,
         "competitor_names": comp_names,
-        "standards_relevance": (r.choice(["declared", "candidate", "none", "none"]) if standards else
-                                (r.choice(["none", "none", None]))),
+        "standards_relevance": (pick(["declared", "candidate"], ["candidate", "none"], ["none"]) if standards else pick(["candidate", "none"], ["none"], ["none"])),
         "public_product_evidence": ([{"product": p, "source": "Public product page (synthetic demo)"} for p in r.sample(tech["products"], k=r.randint(1, 2))]
-                                    if r.random() < 0.28 else []),
-        "licensing_history": (r.choice(["licensed", "offered", "none", "none", "none", "none", None]) if customer_data else None),
-        "evidence_of_use_leads": (r.choice([None, None, 0, 1, 2, 3]) if customer_data else None),
+                                    if (hi and r.random() < 0.6) else []),
+        "licensing_history": pick(["licensed", "offered", "none"], ["offered", "none", "none"], ["none"]),
+        "evidence_of_use_leads": pick([1, 2, 3], [0, 1], [0]),
         "tech_trend_growth": trend,
         "cpc_label": cpc_label,
     }
-    if jur != "US":
-        for k in ("claim1_words",):
-            signals[k] = None if r.random() < 0.5 else signals[k]
-    product_mappings = None
-    cinputs = {}
     obligations = []
-    if customer_data and jur == "US" and r.random() < 0.85:
-        if r.random() < 0.3:
-            product_mappings = []
-        else:
-            product_mappings = [{"product": p, "lifecycle": r.choice(["growth", "mature", "mature", "sunset", "discontinued"]),
-                                 "revenue_band": r.choice(["high", "medium", "low"]), "confirmed_use": r.random() > 0.15}
-                                for p in r.sample(tech["products"], k=r.choice([1, 1, 2]))]
-        cinputs = {"strategic_priority": r.choice(["core", "defensive", "defensive", "non_core", "non_core"]),
-                   "fto_relevance": r.random() < 0.2,
-                   "roadmap_relevance": r.choice(["high", "medium", "low", None])}
+    # Every demo asset gets business inputs (dummy data) so all seven parameters are rated
+    if lo and r.random() < 0.55:
+        product_mappings = []
+    else:
+        life = pick(["growth", "mature"], ["mature", "sunset"], ["sunset", "discontinued"])
+        product_mappings = [{"product": p, "lifecycle": life, "revenue_band": pick(["high", "medium"], ["medium", "low"], ["low"]),
+                             "confirmed_use": not lo or r.random() > 0.5}
+                            for p in r.sample(tech["products"], k=(2 if hi and r.random() < 0.5 else 1))]
+    cinputs = {"strategic_priority": pick(["core", "defensive"], ["defensive", "non_core"], ["non_core"]),
+               "fto_relevance": hi and r.random() < 0.35,
+               "roadmap_relevance": pick(["high", "medium"], ["medium", "low"], ["low"])}
     if signals["standards_relevance"] == "declared":
         obligations.append({"type": "standards", "detail": "FRAND licensing declaration recorded with a standards body (synthetic)"})
     if customer_data and r.random() < 0.05:

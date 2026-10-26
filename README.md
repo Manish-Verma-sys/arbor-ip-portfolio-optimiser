@@ -21,6 +21,27 @@ It implements the *Patent Portfolio Optimisation Engine — System Design & Prod
 | Exports (FR-15) | CSV, XLSX and PDF with data date, scoring version, weights, assumptions and disclaimer. |
 | API extras | Review-decision, audit and role endpoints remain in the API (spec FR-13/14) but are not shown in the simplified UI. Tenant isolation, escaped rendering, idempotency keys and correlation IDs are kept. |
 
+
+## Two pathways
+
+1. **By company** (demo data) — find the owner and rebuild its US portfolio. Filters: filing date range, legal status (active, pending, expired, lapsed, abandoned) and publication type (active, dead, pending). Every parameter is filled in the demo data.
+2. **By patent numbers** (live) — type one or more US patent/application numbers, or import an Excel/CSV list (every cell is scanned). Each patent is analysed live with the Claude API:
+
+| Step | Prompt | Tools |
+|---|---|---|
+| Facts | Read the Google Patents record (fallback: USPTO / web search): dates, legal status, anticipated expiry, maintenance-fee events, entity size, CPC, independent claims, claim-1 length, forward citations and citing assignees, family, litigation mentions | web fetch + web search |
+| Commercial | Current products of the owner practising the claims; virtual patent marking pages | web search |
+| Claim quality | Breadth and robustness from the claim facts only | none |
+| Competitive | Citations vs. age/field norms, competitor citations, standards relevance | web search |
+| Strategic | Is the technology in the owner's core segments; continuing investment; blocking value | web search |
+| Portfolio | Overlap with the owner's other patents in the same CPC / family | web search |
+| Licensing | Litigation, IPR, licensing programmes, third-party use | web search |
+| Future | Remaining term and market outlook | web search |
+
+Each parameter prompt has its own 0–5 rubric and returns `{rating, rationale, confidence, evidence[]}` with source URLs. Fetched web content is treated as untrusted data. Fees, the weighted score and the outcome are then computed deterministically by `costs.py` and `scoring.py`. Prompts live in `app/ai.py`.
+
+Configuration: `ANTHROPIC_API_KEY` (required for pathway 2), `ANTHROPIC_MODEL` (default `claude-sonnet-5-5`). Up to 20 patents per run; roughly one minute per patent.
+
 ## Data
 
 No licensed patent-data provider is configured, so the app ships with:
@@ -36,7 +57,7 @@ A live USPTO/EPO/aggregator connector plugs in behind the same pipeline once dat
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 # open http://localhost:8000
-pytest -q   # 16 tests: formula, outcomes, fee engine, checks, permissions, tenant isolation, scenarios, exports, import
+pytest -q   # 21 tests (live pathway tested with a fake Claude client): formula, outcomes, fee engine, checks, permissions, tenant isolation, scenarios, exports, import
 ```
 
 Environment variables: `DATABASE_URL` (Postgres; default SQLite), `SQLITE_PATH`, `JOB_STEP_DELAY` (seconds per discovery stage, default 0.6).

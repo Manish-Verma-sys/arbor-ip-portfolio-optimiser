@@ -34,8 +34,8 @@ def persist_generated(db: Session, tenant_id: str, name: str, entity: dict, gen:
     pf = Portfolio(id=new_id("pf"), tenant_id=tenant_id, name=name, entity=entity, query_type=query_type,
                    ownership_scope=scope.get("ownership_scope", "current_owner"), data_mode=data_mode,
                    provisional=(query_type == "inventor" and not scope.get("owner_filter") and not scope.get("inventor_centric_confirmed")),
-                   sources=sources or ["USPTO bibliographic & assignment (synthetic demo)", "EPO / CNIPA registers (synthetic demo)",
-                                       "Customer inputs (synthetic demo)" if entity.get("customer_data") else "No customer inputs supplied"],
+                   sources=sources or ["USPTO bibliographic, assignment & fee records (synthetic demo)",
+                                       "Business inputs: product mapping, strategy, licensing (synthetic demo)"],
                    unavailable_sources=["Live patent-office connector (not configured in this deployment)"] if data_mode == "synthetic" else [])
     db.add(pf)
     fam_ids = []
@@ -64,6 +64,37 @@ def persist_generated(db: Session, tenant_id: str, name: str, entity: dict, gen:
                               incurred_on=c["incurred_on"], source_id=c["source_id"]))
     db.flush()
     return pf
+
+
+# ------------------------------------------------------------------ discovery filters
+
+PUB_TYPES = {"active": {"active"}, "dead": {"expired", "lapsed", "abandoned", "withdrawn"}, "pending": {"pending"}}
+
+
+def filter_generated(gen: dict, filters: dict) -> tuple[dict, int]:
+    """Apply landing-page filters (filing date range, legal status, publication type) to discovered records."""
+    f_from, f_to = filters.get("filing_from"), filters.get("filing_to")
+    statuses = set(filters.get("legal_status") or [])
+    ptypes = set(filters.get("publication_types") or [])
+    allowed_by_type = set().union(*(PUB_TYPES[t] for t in ptypes if t in PUB_TYPES)) if ptypes else None
+    kept = []
+    for a in gen["assets"]:
+        fd = a.get("filing_date")
+        if f_from and fd and fd < date.fromisoformat(str(f_from)):
+            continue
+        if f_to and fd and fd > date.fromisoformat(str(f_to)):
+            continue
+        if statuses and a["status"] not in statuses:
+            continue
+        if allowed_by_type is not None and a["status"] not in allowed_by_type:
+            continue
+        kept.append(a)
+    used = sorted({a["family_idx"] for a in kept})
+    remap = {o: i for i, o in enumerate(used)}
+    fams = [gen["families"][o] for o in used]
+    for a in kept:
+        a["family_idx"] = remap[a["family_idx"]]
+    return {**gen, "families": fams, "assets": kept}, len(gen["assets"]) - len(kept)
 
 
 # ------------------------------------------------------------------ configs

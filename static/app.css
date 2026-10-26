@@ -464,3 +464,32 @@ input[type=range] { accent-color: var(--teal); width: 100%; }
 }
 
 #ciUp { white-space: normal; text-align: left; }
+
+/* ---------- v1.2: pathways, multi-select, live badge */
+.b-live { background: #e3eff5; color: var(--ocean); border-color: #b9d6e3; }
+.paths { display: grid; gap: 12px; margin-top: 26px; }
+.path { background: rgba(255, 255, 255, .75); border: 1px solid #efe5cc; border-left: 4px solid var(--teal); border-radius: 12px; padding: 12px 16px; }
+.path b { font-family: var(--serif); font-weight: 400; color: var(--ocean); font-size: 18px; display: block; }
+.path span { font-size: 13px; color: var(--ink-2); }
+.path em { font-style: normal; color: #7a5a12; background: #fff4d6; border-radius: 6px; padding: 0 6px; font-size: 11.5px; }
+.flabel { display: block; margin-bottom: 5px; font-weight: 500; color: var(--ink); font-size: 12.5px; }
+div.f { margin-bottom: 12px; }
+.msel { position: relative; }
+.msel > summary { list-style: none; cursor: pointer; border: 1px solid #d5dde1; border-radius: 10px; padding: 9px 34px 9px 12px; background: #fff; font-size: 14px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; min-width: 150px; }
+.msel > summary::-webkit-details-marker { display: none; }
+.msel > summary::after { content: ""; position: absolute; right: 13px; top: 50%; width: 7px; height: 7px; border-right: 2px solid var(--ink-2); border-bottom: 2px solid var(--ink-2); transform: translateY(-70%) rotate(45deg); }
+.msel[open] > summary { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(0, 163, 154, .15); }
+.msel-pop { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; min-width: 100%; width: max-content; max-width: 300px; background: #fff; border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow-lg); padding: 6px; }
+.msel-opt { display: flex; gap: 8px; align-items: center; padding: 7px 10px; border-radius: 8px; font-size: 13.5px; cursor: pointer; }
+.msel-opt:hover { background: var(--cream); }
+.msel-opt input { accent-color: var(--teal); width: 16px; height: 16px; }
+.msel-foot { display: flex; justify-content: space-between; border-top: 1px solid var(--line-2); margin-top: 4px; padding-top: 4px; }
+.filters .flt { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--ink-2); }
+.filters .msel > summary { padding: 7px 30px 7px 10px; font-size: 13px; min-width: 140px; }
+.assets-t td.ttl { min-width: 220px; max-width: 320px; }
+.assets-t td.ttl a { font-weight: 500; }
+.assets-t .pub { font-size: 12.5px; }
+.ev .src a { color: var(--ocean); text-decoration: none; }
+.ev .src a:hover { text-decoration: underline; }

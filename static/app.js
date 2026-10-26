@@ -103,7 +103,37 @@ const recCell = (r) => `${recPill(r.recommendation)}${r.review_reason ? `<div cl
 const ratingChip = (v) => (v === null || v === undefined ? '<span class="rt rt-u" title="UNKNOWN — not enough evidence">?</span>' : `<span class="rt rt-${v}" title="${v} of 5">${v}</span>`);
 const gatePill = (g) => `<span class="badge gate gate-${esc(g)}">${esc(g)}</span>`;
 const statusTxt = (s) => `<span class="status status-${esc(s)}">${esc(s)}</span>`;
-const modeBadge = (m) => (m === "synthetic" ? '<span class="badge b-syn" title="Fictional demonstration data">SYNTHETIC DEMO DATA</span>' : m === "imported" ? '<span class="badge b-imp">CUSTOMER IMPORT</span>' : `<span class="badge b-mute">${esc(m)}</span>`);
+const modeBadge = (m) => (m === "synthetic" ? '<span class="badge b-syn" title="Fictional demonstration data">SYNTHETIC DEMO DATA</span>'
+  : m === "live_ai" ? '<span class="badge b-live" title="Real public patent records, assessed by Claude">LIVE DATA · AI-ASSESSED</span>'
+  : m === "imported" ? '<span class="badge b-imp">CUSTOMER IMPORT</span>' : `<span class="badge b-mute">${esc(m)}</span>`);
+
+/* Multi-select dropdown: msel(name, [[value,label]...], selectedArray, allLabel) — read with mselValue(el) */
+function msel(name, options, selected = [], allLabel = "All") {
+  const sel = new Set(selected || []);
+  const label = !sel.size ? allLabel : sel.size === 1 ? (options.find((o) => o[0] === [...sel][0]) || [0, [...sel][0]])[1] : `${sel.size} selected`;
+  return `<details class="msel" data-name="${esc(name)}"><summary><span class="msel-label">${esc(label)}</span></summary>
+    <div class="msel-pop" role="listbox" aria-multiselectable="true">
+      ${options.map(([v, l]) => `<label class="msel-opt"><input type="checkbox" value="${esc(v)}" ${sel.has(v) ? "checked" : ""}> <span>${esc(l)}</span></label>`).join("")}
+      <div class="msel-foot"><button type="button" class="btn btn-quiet btn-xs" data-msel-clear>Clear</button><button type="button" class="btn btn-quiet btn-xs" data-msel-all>All</button></div>
+    </div></details>`;
+}
+const mselValue = (el) => $$("input:checked", el).map((i) => i.value);
+function bindMsel(root, onChange) {
+  $$(".msel", root).forEach((d) => {
+    const opts = $$("input", d).map((i) => [i.value, i.nextElementSibling.textContent]);
+    const all = d.closest("[data-all-label]")?.dataset.allLabel;
+    const refresh = () => {
+      const v = mselValue(d);
+      $(".msel-label", d).textContent = !v.length ? (d.dataset.allLabel || "All") : v.length === 1 ? opts.find((o) => o[0] === v[0])[1] : `${v.length} selected`;
+      onChange && onChange(d.dataset.name, v);
+    };
+    d.addEventListener("change", refresh);
+    $("[data-msel-clear]", d).addEventListener("click", () => { $$("input", d).forEach((i) => (i.checked = false)); refresh(); });
+    $("[data-msel-all]", d).addEventListener("click", () => { $$("input", d).forEach((i) => (i.checked = true)); refresh(); });
+  });
+}
+document.addEventListener("click", (e) => { $$("details.msel[open]").forEach((d) => { if (!d.contains(e.target)) d.open = false; }); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") $$("details.msel[open]").forEach((d) => { d.open = false; $("summary", d).focus(); }); });
 const barCls = (v) => (v < 50 ? "vlow" : v < 70 ? "low" : "");
 
 const ICON = {
@@ -203,123 +233,133 @@ async function boot() {
   const meta = await api("/v1/meta");
   S.meta = meta;
   $("#disclaimer").textContent = meta.disclaimer;
-  $("#footMeta").innerHTML = `v${esc(meta.version)} · ${esc(meta.scoring_version)}<br>Synthetic demo entities are fictional.`;
+  $("#footMeta").innerHTML = `v${esc(meta.version)} · ${esc(meta.scoring_version)}<br>Company-search demo data is fictional.`;
   S.me = await api("/v1/me");
   router();
 }
 
 /* ================================================================ HOME */
 async function viewHome() {
-  const dq = S.meta.demo_queries;
+  const aiStatus = await api("/v1/ai/status").catch(() => ({ configured: false }));
+  const dq = S.meta.demo_queries.company;
   main().innerHTML = `
   <section class="hero"><div class="wrap hero-grid">
     <div>
-      <div class="eyebrow">Patent portfolio optimisation engine</div>
+      <div class="eyebrow">Patent maintenance decisions</div>
       <h1>Know which patents to keep, review or let go.</h1>
-      <p class="lead">Search a company or inventor. The calculator rebuilds the portfolio, groups families, forecasts official and professional costs, and scores seven evidence-based dimensions — then tells you for each patent whether to <b>Retain</b>, <b>Review</b> or <b>Abandon</b> — and exactly why.</p>
-      <div class="principles" style="margin-top:28px">
-        <div class="principle"><b>Unknown is not zero</b><span class="small muted">Missing evidence lowers coverage, never the score.</span></div>
-        <div class="principle"><b>Explainable</b><span class="small muted">Every rating links to its source, date and rationale.</span></div>
-        <div class="principle"><b>You decide</b><span class="small muted">Nothing is ever abandoned or paid automatically.</span></div>
+      <p class="lead">Start from a company or from a list of patent numbers. The calculator scores seven value parameters, forecasts USPTO maintenance fees and tells you for each patent whether to <b>Retain</b>, <b>Review</b> or <b>Abandon</b> — and why.</p>
+      <div class="paths">
+        <div class="path"><b>1 · By company</b><span>Find the owner, rebuild its US portfolio, filter by filing date, legal status and publication type. <em>Demo data.</em></span></div>
+        <div class="path"><b>2 · By patent numbers</b><span>Type one or more US patent numbers or import an Excel/CSV list. Each patent is analysed live from public records.</span></div>
       </div>
     </div>
     <div class="search-card" id="searchCard">
-      <div class="seg" role="tablist" aria-label="Search type">
-        <button role="tab" class="on" data-t="company" aria-selected="true">Company</button>
-        <button role="tab" data-t="inventor" aria-selected="false">Inventor</button>
+      <div class="seg" role="tablist" aria-label="Choose a pathway">
+        <button role="tab" class="on" data-t="company" aria-selected="true">By company</button>
+        <button role="tab" data-t="patents" aria-selected="false">By patent numbers</button>
       </div>
-      <form id="sf" autocomplete="off">
-        <label class="f"><span id="nameLbl">Company or assignee name</span><input class="input input-lg" name="name" required minlength="2" placeholder="e.g. Northwind Medical Technologies" /></label>
-        <div class="co">
-          <details class="adv"><summary>Disambiguation (optional)</summary>
-            <div class="row2">
-              <label class="f"><span>Country</span><input class="input" name="country" placeholder="US" maxlength="2" /></label>
-              <label class="f"><span>Website / domain</span><input class="input" name="domain" placeholder="example.com" /></label>
-            </div>
-            <label class="f"><span>Former names (comma-separated)</span><input class="input" name="former_names" placeholder="Northwind Surgical Corp." /></label>
-            <label class="f"><span>Known subsidiaries (comma-separated)</span><input class="input" name="known_subsidiaries" placeholder="Cardiolume Systems LLC" /></label>
-            <label class="check"><input type="checkbox" name="include_subsidiaries" /> Pre-select documented subsidiaries & acquisitions</label>
-          </details>
+
+      <form id="sf" autocomplete="off" class="pane" data-pane="company">
+        <label class="f"><span>Company or assignee name</span><input class="input input-lg" name="name" required minlength="2" placeholder="e.g. Northwind Medical Technologies" /></label>
+        <div class="row2">
+          <label class="f"><span>Filing date from ${tip(null, "Only include patents and applications filed on or after this date.")}</span><input class="input" type="date" name="filing_from" /></label>
+          <label class="f"><span>Filing date to</span><input class="input" type="date" name="filing_to" /></label>
         </div>
-        <div class="inv hide">
+        <div class="row2">
+          <div class="f"><span class="flabel">Legal status ${tip("status")}</span>${msel("legal_status", [["active", "Active"], ["pending", "Pending"], ["expired", "Expired"], ["lapsed", "Lapsed (fee not paid)"], ["abandoned", "Abandoned"]], [], "Any status")}</div>
+          <div class="f"><span class="flabel">Publication type ${tip(null, "Active = granted and in force. Dead = expired, lapsed or abandoned. Pending = application not yet granted.")}</span>${msel("publication_types", [["active", "Active"], ["dead", "Dead"], ["pending", "Pending"]], [], "Any type")}</div>
+        </div>
+        <details class="adv"><summary>More options</summary>
           <div class="row2">
-            <label class="f"><span>Organisation</span><input class="input" name="organisation" placeholder="Employer" /></label>
-            <label class="f"><span>Co-inventor</span><input class="input" name="co_inventor" placeholder="Name" /></label>
+            <label class="f"><span>Country</span><input class="input" name="country" placeholder="US" maxlength="2" /></label>
+            <label class="f"><span>Website / domain</span><input class="input" name="domain" placeholder="example.com" /></label>
           </div>
-          <label class="f"><span>Country</span><input class="input" name="icountry" maxlength="2" placeholder="US" /></label>
-        </div>
+          <label class="f"><span>Former names (comma-separated)</span><input class="input" name="former_names" placeholder="Northwind Surgical Corp." /></label>
+          <label class="check"><input type="checkbox" name="include_subsidiaries" /> Include documented subsidiaries & acquisitions</label>
+        </details>
         <div class="btn-row" style="justify-content:space-between">
-          <span class="help">US-first · jurisdiction scope: US (+ family counterparts)</span>
-          <button class="btn btn-teal" ${can("search") ? "" : "disabled title='Your role cannot start searches'"}>Find entity</button>
+          <span class="help">US patents only · demo data</span>
+          <button class="btn btn-teal">Find company</button>
+        </div>
+        <div class="divider"></div>
+        <div class="small muted" style="margin-bottom:8px">Try a demo company</div>
+        <div class="chips">${dq.map((n) => `<button class="chip" type="button">${esc(n)}</button>`).join("")}</div>
+      </form>
+
+      <form id="pf" autocomplete="off" class="pane hide" data-pane="patents">
+        ${aiStatus.configured ? `<div class="callout callout-ocean small" style="margin-bottom:12px">${ICON.info}<div>Live analysis with <b>${esc(aiStatus.model)}</b>: reads each patent's public record (Google Patents / USPTO) and researches the 7 parameters on the web. Takes ~1 minute per patent; up to ${aiStatus.max_patents} per run.</div></div>`
+          : `<div class="callout callout-warn small" style="margin-bottom:12px">${ICON.warn}<div><b>Live analysis is not switched on yet.</b> The server needs an Anthropic API key (environment variable <code>ANTHROPIC_API_KEY</code>). You can still prepare and check your list.</div></div>`}
+        <label class="f"><span>US patent numbers ${tip(null, "One or more US patent or application numbers, separated by new lines, commas or spaces. Formats like US10123456B2, 10,123,456, US 9,876,543 B2 or US20210123456A1 all work.")}</span>
+          <textarea class="input" name="numbers" rows="5" placeholder="US10123456B2&#10;US 9,876,543 B2&#10;US20210123456A1"></textarea></label>
+        <div class="row2">
+          <label class="f"><span>…or import Excel / CSV ${tip(null, "Any .xlsx or .csv file — every cell is scanned for US patent numbers. Download the template for the expected layout.")}</span><input class="input" type="file" name="file" accept=".xlsx,.xlsm,.csv,text/csv" /></label>
+          <label class="f"><span>USPTO entity size ${tip(null, "Drives the official maintenance-fee amounts: small entity pays 40% and micro 20% of the large-entity fee. 'From record' uses the size shown in the patent's fee events.")}</span><select class="input" name="entity_size"><option value="auto">From record</option><option value="large">Large</option><option value="small">Small</option><option value="micro">Micro</option></select></label>
+        </div>
+        <label class="f"><span>Analysis name (optional)</span><input class="input" name="name" placeholder="e.g. Q1 renewal list" /></label>
+        <div id="preview" class="small"></div>
+        <div class="btn-row" style="justify-content:space-between;margin-top:6px">
+          <button type="button" class="btn btn-quiet btn-sm" id="tplX">Download Excel template</button>
+          <div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" id="checkList">Check list</button><button class="btn btn-teal" ${aiStatus.configured ? "" : "disabled title='Needs ANTHROPIC_API_KEY on the server'"}>Analyse patents</button></div>
         </div>
       </form>
-      <div class="divider"></div>
-      <div class="small muted" style="margin-bottom:8px">Try a demo entity</div>
-      <div class="chips" id="demoChips"></div>
     </div>
   </div>
   <div class="wrap"><div class="steps">
-    <div class="step"><span class="n">01</span><b>Resolve</b><span class="small muted">Candidate entities with match evidence; you confirm.</span></div>
-    <div class="step"><span class="n">02</span><b>Reconstruct</b><span class="small muted">Applications, grants, families, ownership timeline.</span></div>
-    <div class="step"><span class="n">03</span><b>Score & cost</b><span class="small muted">Seven dimensions, coverage, confidence, 3/5-year cost.</span></div>
-    <div class="step"><span class="n">04</span><b>Decide</b><span class="small muted">Retain, Review or Abandon — with reasons, costs and what-if scenarios.</span></div>
+    <div class="step"><span class="n">01</span><b>Find</b><span class="small muted">A company's US portfolio, or your own list of patent numbers.</span></div>
+    <div class="step"><span class="n">02</span><b>Read the record</b><span class="small muted">Dates, legal status, fee events, claims, citations, family.</span></div>
+    <div class="step"><span class="n">03</span><b>Score & cost</b><span class="small muted">Seven parameters rated 0–5, USPTO fees over 3 and 5 years.</span></div>
+    <div class="step"><span class="n">04</span><b>Decide</b><span class="small muted">Retain, Review or Abandon — with reasons and sources.</span></div>
   </div></div></section>
   <section class="wrap page">
-    <div class="grid g-side">
-      <div class="card"><div class="card-head"><h3>Recent portfolios</h3><a class="btn btn-quiet btn-sm" href="#/portfolios">View all →</a></div><div id="recent">${'<div class="skeleton"></div>'.repeat(3)}</div></div>
-      <div class="card">
-        <h3>Import your own portfolio</h3>
-        <p class="small muted">Upload a CSV of your patents with optional product mappings, strategy tags and licensing history. Unknown fields stay UNKNOWN — they are never treated as zero.</p>
-        <form id="impf">
-          <label class="f"><span>Portfolio name</span><input class="input" name="name" required placeholder="FY27 renewal review" /></label>
-          <label class="f"><span>Owner (legal entity)</span><input class="input" name="owner" required placeholder="Your Company Inc." /></label>
-          <div class="row2">
-            <label class="f"><span>Entity size</span><select class="input" name="entity_size"><option value="large">Large</option><option value="small">Small</option><option value="micro">Micro</option></select></label>
-            <label class="f"><span>CSV file</span><input class="input" type="file" name="file" accept=".csv,text/csv" required /></label>
-          </div>
-          <div class="btn-row"><button class="btn btn-ocean btn-sm" ${can("search") ? "" : "disabled"}>Import & score</button><button type="button" class="btn btn-quiet btn-sm" id="tpl">Download template</button></div>
-        </form>
-      </div>
-    </div>
+    <div class="card"><div class="card-head"><h3>Recent analyses</h3><a class="btn btn-quiet btn-sm" href="#/portfolios">View all →</a></div><div id="recent">${'<div class="skeleton"></div>'.repeat(3)}</div></div>
   </section>`;
-  let type = "company";
-  const chips = () => { $("#demoChips").innerHTML = dq[type].map((n) => `<button class="chip" type="button">${esc(n)}</button>`).join(""); };
-  chips();
+  bindMsel($("#sf"));
   $$(".seg button").forEach((b) => b.addEventListener("click", () => {
-    type = b.dataset.t;
     $$(".seg button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-selected", x === b); });
-    $(".co").classList.toggle("hide", type !== "company"); $(".inv").classList.toggle("hide", type !== "inventor");
-    $("#nameLbl").textContent = type === "company" ? "Company or assignee name" : "Inventor name";
-    $("#sf [name=name]").placeholder = type === "company" ? "e.g. Northwind Medical Technologies" : "e.g. Priya Raman";
-    chips();
+    $$(".pane").forEach((p) => p.classList.toggle("hide", p.dataset.pane !== b.dataset.t));
   }));
-  $("#demoChips").addEventListener("click", (e) => { if (e.target.matches(".chip")) { $("#sf [name=name]").value = e.target.textContent; $("#sf [name=name]").focus(); } });
+  $(".chips").addEventListener("click", (e) => { if (e.target.matches(".chip")) { $("#sf [name=name]").value = e.target.textContent; $("#sf [name=name]").focus(); } });
   $("#sf").addEventListener("submit", async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
-    const list = (k) => (f.get(k) || "").split(",").map((s) => s.trim()).filter(Boolean);
-    const body = { query_type: type, name: f.get("name").trim(), jurisdiction_scope: ["US"] };
-    if (type === "company") Object.assign(body, { country: f.get("country") || null, domain: f.get("domain") || null, former_names: list("former_names"), known_subsidiaries: list("known_subsidiaries"), include_subsidiaries: !!f.get("include_subsidiaries") });
-    else Object.assign(body, { organisation: f.get("organisation") || null, co_inventor: f.get("co_inventor") || null, country: f.get("icountry") || null });
-    try {
-      const s = await api("/v1/portfolio-searches", { method: "POST", body, headers: { "Idempotency-Key": idem() } });
-      location.hash = `#/search/${s.search_id}`;
-    } catch (ex) { toast(ex.message, true); }
+    const list = (k) => (f.get(k) || "").split(",").map((x) => x.trim()).filter(Boolean);
+    const body = { query_type: "company", name: f.get("name").trim(), jurisdiction_scope: ["US"], country: f.get("country") || null, domain: f.get("domain") || null,
+      former_names: list("former_names"), include_subsidiaries: !!f.get("include_subsidiaries"),
+      filing_from: f.get("filing_from") || null, filing_to: f.get("filing_to") || null,
+      legal_status: mselValue($("#sf .msel[data-name=legal_status]")), publication_types: mselValue($("#sf .msel[data-name=publication_types]")) };
+    if (body.filing_from && body.filing_to && body.filing_from > body.filing_to) { toast("'Filing date from' is after 'to'", true); return; }
+    try { const s = await api("/v1/portfolio-searches", { method: "POST", body, headers: { "Idempotency-Key": idem() } }); location.hash = `#/search/${s.search_id}`; }
+    catch (ex) { toast(ex.message, true); }
   });
-  $("#tpl").addEventListener("click", () => download("/v1/templates/portfolio.csv", "portfolio_import_template.csv"));
-  $("#impf").addEventListener("submit", async (e) => {
+  const pform = $("#pf");
+  const check = async () => {
+    const fd = new FormData(); const file = pform.file.files[0];
+    if (file) fd.append("file", file); else fd.append("numbers", pform.numbers.value);
+    const r = await api("/v1/patent-analyses/parse", { method: "POST", body: fd });
+    $("#preview").innerHTML = r.valid.length || r.rejected.length ? `<div class="callout ${r.valid.length > r.max ? "callout-warn" : "callout-cream"}" style="margin:4px 0 8px">${ICON.info}<div><b>${r.valid.length}</b> US patent number(s) recognised${r.valid.length > r.max ? ` — the limit is ${r.max} per run` : ""}: <span class="mono xsmall">${r.valid.slice(0, 20).map(esc).join(", ")}${r.valid.length > 20 ? "…" : ""}</span>${r.rejected.length ? `<div class="xsmall" style="margin-top:4px">Not recognised (non-US or invalid): ${r.rejected.slice(0, 8).map(esc).join(", ")}</div>` : ""}</div></div>` : `<p class="muted">No patent numbers entered yet.</p>`;
+    return r;
+  };
+  $("#checkList").addEventListener("click", () => check().catch((ex) => toast(ex.message, true)));
+  pform.file.addEventListener("change", () => check().catch((ex) => toast(ex.message, true)));
+  $("#tplX").addEventListener("click", () => download("/v1/templates/patent-numbers.xlsx", "patent_numbers_template.xlsx"));
+  pform.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const btn = e.submitter; btn.disabled = true; btn.textContent = "Importing…";
+    const btn = e.submitter; btn.disabled = true; btn.textContent = "Starting…";
     try {
-      const r = await api("/v1/portfolios/import", { method: "POST", body: new FormData(e.target) });
-      toast(`Imported ${r.imported} assets${r.warnings.length ? ` with ${r.warnings.length} warning(s)` : ""}`);
-      if (r.warnings.length) console.warn(r.warnings);
-      location.hash = `#/p/${r.portfolio_id}`;
-    } catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = "Import & score"; }
+      const file = pform.file.files[0];
+      let s;
+      if (file) {
+        const fd = new FormData(); fd.append("file", file); fd.append("name", pform.name.value); fd.append("entity_size", pform.entity_size.value);
+        s = await api("/v1/patent-analyses/upload", { method: "POST", body: fd });
+      } else {
+        s = await api("/v1/patent-analyses", { method: "POST", body: { numbers: pform.numbers.value, name: pform.name.value || null, entity_size: pform.entity_size.value } });
+      }
+      location.hash = `#/search/${s.search_id}`;
+    } catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = "Analyse patents"; }
   });
   try {
     const pfs = await api("/v1/portfolios");
-    $("#recent").innerHTML = pfs.length ? pfs.slice(0, 5).map(pfRow).join("") : `<div class="empty small">No portfolios yet — search above.</div>`;
+    $("#recent").innerHTML = pfs.length ? pfs.slice(0, 6).map(pfRow).join("") : `<div class="empty small">Nothing yet — start above.</div>`;
   } catch (ex) { $("#recent").innerHTML = `<p class="muted">${esc(ex.message)}</p>`; }
 }
 
@@ -429,13 +469,13 @@ function renderProgress(s) {
   const fail = s.status === "FAILED";
   const done = ["REVIEW_READY", "PARTIAL"].includes(s.status);
   main().innerHTML = `<div class="wrap page" style="max-width:760px">
-    <div class="eyebrow">Step 2 of 2 · Portfolio discovery</div>
+    <div class="eyebrow">${s.query_type === "patents" ? "Live patent analysis" : "Step 2 of 2 · Portfolio discovery"}</div>
     <h2>${esc(s.confirmed?.entity?.canonical_name || s.name)}</h2>
     <div class="progress" aria-label="Progress"><i style="width:${s.progress}%"></i></div>
     <ol class="stepper">${JOB_STEPS.map(([k, l], i) => `<li class="${done || i < idx ? "done" : i === idx && !fail ? "now" : ""}"><span class="dot">${done || i < idx ? "✓" : ""}</span><span>${esc(l)}</span><span class="muted xsmall" style="margin-left:auto">${esc(k)}</span></li>`).join("")}</ol>
     ${fail ? `<div class="callout callout-bad">${ICON.warn}<div><b>Job failed.</b> ${esc(s.error)} <a href="#/">Retry search</a></div></div>` : ""}
     ${s.status === "PARTIAL" ? `<div class="callout callout-warn">${ICON.warn}<div><b>Partial result.</b> Some sources are unavailable; limitations are shown alongside results.</div></div>` : ""}
-    <div class="card" style="margin-top:14px"><h4>Job log</h4><ul class="why-list small">${(s.messages || []).map((m) => `<li><span class="muted">${fmtDT(m.t)}</span> — ${esc(m.msg)}</li>`).join("")}</ul>
+    <div class="card" style="margin-top:14px"><h4>Job log</h4><ul class="why-list small">${(s.messages || []).slice(-40).map((m) => `<li><span class="muted">${fmtDT(m.t)}</span> — ${esc(m.msg)}</li>`).join("")}</ul>${s.query_type === "patents" && !["REVIEW_READY", "PARTIAL", "FAILED"].includes(s.status) ? '<p class="xsmall muted">Each patent takes roughly a minute: one call reads the record, then seven parameter assessments run in parallel. You can leave this page — results appear under Portfolios when finished.</p>' : ""}
     ${s.portfolio_id ? `<a class="btn btn-teal" href="#/p/${esc(s.portfolio_id)}">Open portfolio →</a>` : ""}</div></div>`;
 }
 
@@ -448,7 +488,7 @@ async function viewPortfolio(pid, tab = "overview", q) {
   const tabs = [["overview", "Dashboard"], ["assets", "Assets"], ["families", "Families"], ["scenarios", "Scenarios"]];
   main().innerHTML = `
   <section class="band"><div class="wrap">
-    <div class="eyebrow">${p.query_type === "inventor" ? "Inventor portfolio" : "Company portfolio"} · ${esc(p.ownership_scope.replace(/_/g, " "))}</div>
+    <div class="eyebrow">${p.query_type === "patents" ? "Patent list · live analysis" : p.query_type === "inventor" ? "Inventor portfolio" : "Company portfolio"} · US</div>
     <h1>${esc(p.name)}</h1>
     <div class="meta"><span>${modeBadge(p.data_mode)}</span>${p.provisional ? '<span class="badge b-warn">PROVISIONAL — owner not confirmed</span>' : ""}<span>Data as of <b>${fmtDate(p.as_of_date)}</b></span><span>Status refreshed ${fmtDT(p.refreshed_at)}</span><span>Entity size: ${esc(p.entity_size)}</span>${runId !== p.latest_score_run_id ? `<span class="badge b-warn">Viewing scenario run ${esc(runId)}</span>` : ""}</div>
   </div></section>
@@ -519,11 +559,11 @@ async function tabOverview(p, runId) {
       <div class="btn-row"><button class="btn btn-quiet btn-sm" id="ciTpl">Download inputs template</button>${can("inputs") ? `<label class="btn btn-ocean btn-sm">Upload inputs CSV<input type="file" accept=".csv" id="ciFile" hidden></label>` : ""}</div></div>
   </div>`;
   $$(".outcome").forEach((b) => {
-    const go = (e) => { if (e.target.closest(".ibtn")) return; S.filters[p.portfolio_id] = { recommendation: b.dataset.rec }; location.hash = `#/p/${p.portfolio_id}/assets`; };
+    const go = (e) => { if (e.target.closest(".ibtn")) return; S.filters[p.portfolio_id] = { recommendation: [b.dataset.rec] }; location.hash = `#/p/${p.portfolio_id}/assets`; };
     b.addEventListener("click", go);
     b.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); } });
   });
-  $$(".reason-row").forEach((b) => b.addEventListener("click", () => { S.filters[p.portfolio_id] = { recommendation: "review", reason: b.dataset.reason }; location.hash = `#/p/${p.portfolio_id}/assets`; }));
+  $$(".reason-row").forEach((b) => b.addEventListener("click", () => { S.filters[p.portfolio_id] = { recommendation: ["review"], reason: [b.dataset.reason] }; location.hash = `#/p/${p.portfolio_id}/assets`; }));
   $$("[data-exp]").forEach((b) => b.addEventListener("click", () => download(`/v1/score-runs/${runId}/export.${b.dataset.exp}`, `export.${b.dataset.exp}`)));
   $$(".scatter-dot").forEach((d) => d.addEventListener("click", () => (location.hash = `#/a/${d.dataset.id}`)));
   $("#refresh")?.addEventListener("click", async (e) => { e.target.disabled = true; try { const r = await api(`/v1/portfolios/${p.portfolio_id}/refresh-status`, { method: "POST" }); toast(`Rechecked ${r.rechecked} records. ${r.note}`); router(); } catch (ex) { toast(ex.message, true); e.target.disabled = false; } });
@@ -582,11 +622,11 @@ async function tabAssets(p, runId) {
   <div class="card" style="margin-top:16px">
     <div class="filters" id="flt">
       <label>Search<input class="input" name="q" placeholder="Publication, title, owner" value="${esc(f.q || "")}"></label>
-      <label>Outcome<select class="input" name="recommendation"><option value="">All</option>${REC_ORDER.map((k) => `<option value="${k}" ${f.recommendation === k ? "selected" : ""}>${esc(recLabel(k))}</option>`).join("")}</select></label>
-      <label>Review reason<select class="input" name="reason"><option value="">Any</option>${Object.entries(REASON_SHORT).map(([k, v]) => `<option value="${k}" ${f.reason === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
-      <label>Jurisdiction<select class="input" name="jurisdiction"><option value="">All</option>${["US", "EP", "CN"].map((g) => `<option ${f.jurisdiction === g ? "selected" : ""}>${g}</option>`).join("")}</select></label>
-      <label>Status<select class="input" name="status"><option value="">All</option>${["active", "pending", "expired", "lapsed", "abandoned"].map((g) => `<option ${f.status === g ? "selected" : ""}>${g}</option>`).join("")}</select></label>
-      <label>Fee due within<select class="input" name="deadline_days"><option value="">Any</option>${[30, 90, 180, 365].map((d) => `<option value="${d}" ${String(f.deadline_days) === String(d) ? "selected" : ""}>${d} days</option>`).join("")}</select></label>
+      <div class="flt"><span>Outcome</span>${msel("recommendation", REC_ORDER.map((k) => [k, recLabel(k)]), f.recommendation, "All outcomes")}</div>
+      <div class="flt"><span>Review reason</span>${msel("reason", Object.entries(REASON_SHORT), f.reason, "Any reason")}</div>
+      <div class="flt"><span>Status</span>${msel("status", [["active", "Active"], ["pending", "Pending"], ["expired", "Expired"], ["lapsed", "Lapsed"], ["abandoned", "Abandoned"]], f.status, "Any status")}</div>
+      <div class="flt"><span>Next fee due</span>${msel("due", [["0-90", "Within 90 days"], ["91-180", "91–180 days"], ["181-365", "181–365 days"], ["366-1095", "1–3 years"], ["1096-99999", "Later than 3 years"], ["none", "No fee due"]], f.due, "Any time")}</div>
+      <div class="flt"><span>Checks</span>${msel("gate", [["PASS", "PASS"], ["REVIEW", "REVIEW"], ["BLOCK", "BLOCK"]], f.gate, "Any")}</div>
       <button class="btn btn-quiet btn-sm" id="clr" type="button">Clear</button>
       <span style="flex:1"></span>
       <div class="btn-row">${["csv", "xlsx", "pdf"].map((x) => `<button class="btn btn-ghost btn-xs" data-exp="${x}" type="button">${x.toUpperCase()}</button>`).join("")}</div>
@@ -598,30 +638,39 @@ async function tabAssets(p, runId) {
   const drawModel = (cfg) => {
     if (modelDrawn) return; modelDrawn = true;
     const w = cfg.weights, t = cfg.thresholds;
-    $("#modelCard").innerHTML = `<div class="card-head"><h3>Scoring model in use ${tip("model")}</h3><span class="small muted">${esc(cfg.name)} · v${esc(cfg.version)} · ${esc(S.meta.scoring_version)} ${cfg.kind === "scenario" ? '<span class="badge b-warn">scenario</span>' : ""}</span></div>
-      <div class="weights">${dims.map((d) => `<div class="wt"><div class="wt-top"><span>${esc(d.label)}</span>${tip(d.key)}</div><div class="wt-val">${Number(w[d.key]).toFixed(0)}<small>/100</small></div><div class="bar"><i style="width:${Number(w[d.key]) * 2}%"></i></div></div>`).join("")}</div>
-      <div class="rules"><span>${recPill("retain")} score ≥ <b>${t.retain}</b></span><span>${recPill("review")} score ${t.review}–${t.retain - 1}, or coverage &lt; <b>${t.coverage_min}%</b>, confidence &lt; <b>${t.confidence_min}%</b>, or a data / legal check</span><span>${recPill("abandon")} score &lt; <b>${t.review}</b></span>${tip("outcome")}
-      <a class="small" href="#/settings" style="margin-left:auto">Change model →</a></div>
-      <p class="xsmall muted" style="margin:8px 0 0">Score = 100 × Σ(weight × rating ÷ 5) ÷ Σ(weight), over parameters with evidence. Ratings in the table below are 0–5; <span class="rt rt-u">?</span> = UNKNOWN (excluded, not zero).</p>`;
+    $("#modelCard").innerHTML = `<div class="card-head"><h3>Scoring model in use ${tip("model")}</h3><span class="small muted">${esc(cfg.name)} · v${esc(cfg.version)} ${cfg.kind === "scenario" ? '<span class="badge b-warn">scenario</span>' : ""} · <a href="#/settings">change</a></span></div>
+      <div class="weights">${dims.map((d) => `<div class="wt"><div class="wt-top"><span>${esc(d.label)}</span>${tip(d.key)}</div><div class="wt-val">${Number(w[d.key]).toFixed(0)}<small>/100</small></div><div class="bar"><i style="width:${Number(w[d.key]) * 2}%"></i></div></div>`).join("")}</div>`;
   };
+  let cache = null;
+  const inDue = (r, ranges) => ranges.some((rg) => {
+    if (rg === "none") return !r.next_deadline;
+    if (!r.next_deadline) return false;
+    const [lo, hi] = rg.split("-").map(Number); const d = daysTo(r.next_deadline); return d >= lo && d <= hi;
+  });
   const load = async () => {
-    const params = {}; for (const k of ["q", "recommendation", "jurisdiction", "status", "deadline_days"]) if (f[k]) params[k] = f[k];
-    const res = await api(`/v1/score-runs/${runId}/results?${new URLSearchParams({ ...params, sort: f.sort, order: f.order, page: 1, page_size: 500 })}`);
+    if (!cache) cache = await api(`/v1/score-runs/${runId}/results?${new URLSearchParams({ page_size: 500 })}`);
+    const res = cache;
     drawModel(res.config);
-    let items = res.items;
-    if (f.reason) items = items.filter((r) => r.review_reason === f.reason);
+    const has = (k) => Array.isArray(f[k]) && f[k].length;
+    const q = (f.q || "").toLowerCase();
+    let items = res.items.filter((r) => (!q || (r.publication_number + " " + r.title + " " + (r.current_owner || "")).toLowerCase().includes(q))
+      && (!has("recommendation") || f.recommendation.includes(r.recommendation)) && (!has("reason") || f.reason.includes(r.review_reason))
+      && (!has("status") || f.status.includes(r.status)) && (!has("gate") || f.gate.includes(r.gate_status)) && (!has("due") || inDue(r, f.due)));
+    const key = f.sort, dir = f.order === "asc" ? 1 : -1;
+    const val = (r) => (key === "cost_5y" ? (r.cost_5y === null ? null : Number(r.cost_5y)) : key.startsWith("dim:") ? r.ratings?.[key.slice(4)] : r[key]);
+    items = items.slice().sort((x, y) => { const a = val(x), b = val(y); if (a === null || a === undefined) return 1; if (b === null || b === undefined) return -1; return (a > b ? 1 : a < b ? -1 : 0) * dir; });
     const total = items.length, ps = 50, pages = Math.max(1, Math.ceil(total / ps));
     if (f.page > pages) f.page = pages;
     const pageItems = items.slice((f.page - 1) * ps, f.page * ps);
-    const w = res.config.weights;
     const th = (k, l, cls = "", tk = null) => `<th class="${cls}"><span class="thw"><button data-sort="${k}">${l} ${f.sort === k ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button>${tk ? tip(tk) : ""}</span></th>`;
     $("#tbl").innerHTML = items.length ? `<div class="table-wrap"><table class="t assets-t"><thead>
-      <tr><th colspan="2"></th><th colspan="${dims.length}" class="grp">Parameter ratings (0–5) · weight ${tip("rating")}</th><th colspan="5"></th></tr>
-      <tr>${th("publication_number", "Asset", "", "asset")}${th("strategic_score", "Score", "", "score")}
-      ${dims.map((d) => `<th class="dimh"><span class="thw"><span>${esc(DIM_SHORT[d.key])}<small>${Number(w[d.key]).toFixed(0)}</small></span>${tip(d.key, d.label + ": " + DIM_HELP[d.key])}</span></th>`).join("")}
+      <tr><th colspan="3"></th><th colspan="${dims.length}" class="grp">Parameter ratings (0–5) ${tip("rating")}</th><th colspan="5"></th></tr>
+      <tr>${th("publication_number", "Publication no.", "", null)}${th("title", "Title", "", "asset")}${th("strategic_score", "Score", "", "score")}
+      ${dims.map((d) => `<th class="dimh"><span class="thw"><button data-sort="dim:${d.key}">${esc(DIM_SHORT[d.key])} ${f.sort === "dim:" + d.key ? `<span class="arr">${f.order === "desc" ? "▼" : "▲"}</span>` : ""}</button>${tip(d.key, d.label + ": " + DIM_HELP[d.key])}</span></th>`).join("")}
       ${th("data_coverage", "Coverage", "num", "coverage")}${th("recommendation", "Outcome", "", "outcome")}<th><span class="thw">Checks ${tip("checks")}</span></th>${th("cost_5y", "5-yr cost", "num", "cost5")}${th("next_deadline", "Next fee due", "", "deadline")}</tr></thead>
       <tbody>${pageItems.map((r) => `<tr data-id="${esc(r.patent_asset_id)}">
-        <td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.title)}</a><div class="pub">${esc(r.publication_number)}</div><div class="xsmall muted">${statusTxt(r.status)} · ${esc(r.jurisdiction)} · ${esc(r.relationship_type)}</div></td>
+        <td class="nowrap"><a class="pub" href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.publication_number)}</a><div class="xsmall muted">${statusTxt(r.status)}${r.relationship_type !== "original" ? " · " + esc(r.relationship_type) : ""}</div></td>
+        <td class="ttl"><a href="#/a/${esc(r.patent_asset_id)}${runId !== p.latest_score_run_id ? "?run=" + esc(runId) : ""}">${esc(r.title)}</a></td>
         <td>${r.strategic_score === null ? '<span class="unknown">n/a</span>' : `<div class="scorecell"><b>${r.strategic_score.toFixed(0)}</b><div class="bar" style="width:48px"><i style="width:${r.strategic_score}%"></i></div></div>`}</td>
         ${dims.map((d) => `<td class="center">${ratingChip(r.ratings?.[d.key])}</td>`).join("")}
         <td class="num" title="Evidence confidence ${r.evidence_confidence.toFixed(0)}%">${r.data_coverage.toFixed(0)}%</td>
@@ -635,9 +684,10 @@ async function tabAssets(p, runId) {
     $("#next")?.addEventListener("click", () => { f.page++; load(); });
   };
   let tmr;
-  $("#flt").addEventListener("input", (e) => { if (!e.target.name) return; f[e.target.name] = e.target.value; f.page = 1; clearTimeout(tmr); tmr = setTimeout(load, e.target.name === "q" ? 300 : 0); });
+  $("#flt").addEventListener("input", (e) => { if (e.target.name !== "q") return; f.q = e.target.value; f.page = 1; clearTimeout(tmr); tmr = setTimeout(load, 250); });
+  bindMsel($("#flt"), (name, v) => { f[name] = v; f.page = 1; load(); });
   $("#clr").addEventListener("click", () => { S.filters[p.portfolio_id] = {}; tabAssets(p, runId); });
-  $$("[data-exp]", tb).forEach((b) => b.addEventListener("click", () => download(`/v1/score-runs/${runId}/export.${b.dataset.exp}${f.recommendation ? "?recommendation=" + f.recommendation : ""}`, "export")));
+  $$("[data-exp]", tb).forEach((b) => b.addEventListener("click", () => download(`/v1/score-runs/${runId}/export.${b.dataset.exp}${Array.isArray(f.recommendation) && f.recommendation.length ? "?recommendation=" + f.recommendation.join(",") : ""}`, "export")));
   await load();
 }
 
@@ -792,7 +842,6 @@ function recCard(sc, run, d) {
         <div class="metric"><div class="lbl">Evidence confidence ${tip("confidence")}</div><div class="val">${sc.evidence_confidence.toFixed(0)}%</div><div class="bar ${barCls(sc.evidence_confidence)}"><i style="width:${sc.evidence_confidence}%"></i></div></div>
         <div class="metric"><div class="lbl">Checks ${tip("checks")}</div><div class="val">${gatePill(sc.gate_status)}</div></div>
       </div></div></div>
-    <div class="rules small" style="margin-top:14px">${recPill("retain")} ≥ ${t.retain}<span class="muted">·</span>${recPill("review")} ${t.review}–${t.retain - 1}<span class="muted">·</span>${recPill("abandon")} &lt; ${t.review}<span class="muted">· needs coverage ≥ ${t.coverage_min}% and confidence ≥ ${t.confidence_min}%</span></div>
     ${sc.data_coverage < t.coverage_min ? `<div class="callout callout-cream" style="margin-top:12px">${ICON.info}<div>Only ${sc.data_coverage.toFixed(0)}% of the scoring weight has evidence, so this patent can't be confidently called Retain or Abandon yet. Missing parameters are left out, not counted as zero — add the inputs listed below.</div></div>` : ""}
     ${(ex.confidence_notes || []).length ? `<p class="xsmall muted" style="margin-top:10px">Confidence adjustments: ${ex.confidence_notes.map(esc).join("; ")}</p>` : ""}
     <p class="xsmall muted" style="margin:10px 0 0">${esc(run.config.name)} · ${esc(run.scoring_version)} · data as of ${fmtDate(run.as_of_date)}</p></div>`;
@@ -815,14 +864,14 @@ function dimsCard(sc, run) {
   ${S.meta.dimensions.map((dm) => { const v = sc.dimension_scores[dm.key]; const r = v.rating; return `<tr><td><b>${esc(dm.label)}</b> ${tip(dm.key)}<div class="basis">${esc(v.basis || "no evidence")}${v.basis === "analyst" && v.derived_rating !== null && v.derived_rating !== undefined ? ` · derived was ${v.derived_rating}` : ""}</div></td><td class="num">${Number(w[dm.key]).toFixed(0)}</td>
     <td class="nowrap">${r === null ? '<span class="unknown">UNKNOWN</span>' : `<span class="dots" aria-label="${r} of 5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= r ? "on" : ""}"></i>`).join("")}</span> <b>${r}</b>`}</td>
     <td class="num small">${r === null ? "—" : ((Number(w[dm.key]) * r) / 5).toFixed(1) + " / " + Number(w[dm.key]).toFixed(0)}</td><td class="small">${esc(v.rationale)}</td><td>${can("inputs") ? `<button class="btn btn-quiet btn-xs" data-dim="${dm.key}">Add input</button>` : ""}</td></tr>`; }).join("")}
-  </tbody></table></div><p class="xsmall muted" style="margin-top:8px">Score = 100 × Σ(Wᵢ × Rᵢ/5) ÷ Σ(Wᵢ) over known dimensions. Analyst inputs override derived ratings and are audited.</p></div>`;
+  </tbody></table></div></div>`;
 }
 
 function evidenceCard(evs) {
   const groups = {};
   evs.forEach((e) => (groups[e.dimension] = groups[e.dimension] || []).push(e));
   return `<div class="card"><div class="card-head"><h3>Evidence</h3><span class="small muted">${evs.length} items · retrieved text is treated as untrusted data</span></div>
-  ${Object.keys(groups).length ? S.meta.dimensions.filter((d) => groups[d.key]).map((d) => `<h4 style="margin-top:10px">${esc(d.label)}</h4>${groups[d.key].map((e) => `<div class="ev"><div class="src">${esc(e.source_name)}</div><div class="small">${esc(e.excerpt)}</div><div class="meta">Source date ${fmtDate(e.source_date)} · retrieved ${fmtDT(e.retrieved_at)} · reliability ${Math.round(e.reliability * 100)}% · directness ${Math.round(e.directness * 100)}%${e.polarity ? (e.polarity > 0 ? " · supports value" : " · weighs against") : ""}</div></div>`).join("")}`).join("") : '<p class="small muted">No evidence attached.</p>'}</div>`;
+  ${Object.keys(groups).length ? S.meta.dimensions.filter((d) => groups[d.key]).map((d) => `<h4 style="margin-top:10px">${esc(d.label)}</h4>${groups[d.key].map((e) => `<div class="ev"><div class="src">${/^https?:\/\//.test(e.source_uri || "") ? `<a href="${esc(e.source_uri)}" target="_blank" rel="noopener noreferrer">${esc(e.source_name)} ↗</a>` : esc(e.source_name)}</div><div class="small">${esc(e.excerpt)}</div><div class="meta">Source date ${fmtDate(e.source_date)} · retrieved ${fmtDT(e.retrieved_at)} · reliability ${Math.round(e.reliability * 100)}% · directness ${Math.round(e.directness * 100)}%${e.polarity ? (e.polarity > 0 ? " · supports value" : " · weighs against") : ""}</div></div>`).join("")}`).join("") : '<p class="small muted">No evidence attached.</p>'}</div>`;
 }
 
 function costCard(c, actuals, a) {
@@ -842,7 +891,7 @@ function familyCard(fam, a) {
   const node = (m, x, y) => `<g transform="translate(${x},${y})"><rect width="170" height="36" rx="9" fill="${m.id === a.id ? "#e6f6f4" : "#fff"}" stroke="${m.id === a.id ? "#00A39A" : "#cfd8dc"}" stroke-width="${m.id === a.id ? 2 : 1}"/><text x="10" y="15" fill="#005376" style="font-family:ui-monospace,monospace;font-size:10.5px">${esc(m.publication_number)}</text><text x="10" y="29" fill="#5d6870">${esc(m.jurisdiction)} · ${esc(m.status)}${m.recommendation ? " · " + esc((recLabel(m.recommendation) || "").split(" ")[0]) : ""}</text></g>`;
   const svg = `<svg class="chart famtree" viewBox="0 0 ${W} ${H}" role="img" aria-label="Family tree">${others.map((m, i) => { const y = 10 + i * 46; return `<path d="M175 ${H / 2} C 190 ${H / 2}, 175 ${y + 18}, 188 ${y + 18}" stroke="${m.relationship_type === "continuation" ? "#00A39A" : "#9fb3bc"}" stroke-dasharray="${m.relationship_type === "continuation" ? "" : "4 3"}" fill="none"/>${node(m, 188, y)}`; }).join("")}${node(root, 2, H / 2 - 18)}</svg>`;
   return `<div class="card"><div class="card-head"><h3>Family</h3><span class="small muted">${fam.length} member(s)</span></div>${svg}
-    <p class="xsmall muted">Solid line: continuation · dashed: foreign counterpart. Each member has its own status, cost and value.</p>
+    <p class="xsmall muted">Solid line: continuation. Each member has its own status, cost and value.</p>
     <table class="t"><tbody>${fam.map((m) => `<tr><td class="pub">${m.id === a.id ? `<b>${esc(m.publication_number)}</b>` : `<a href="#/a/${esc(m.id)}">${esc(m.publication_number)}</a>`}</td><td class="small">${esc(m.relationship_type)}</td><td>${statusTxt(m.status)}</td><td class="num small">${fmtMoney(m.cost_5y)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
