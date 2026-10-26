@@ -24,7 +24,7 @@ STATUS_MAP = [
     (r"expired\s*-\s*fee", "lapsed"), (r"fee related", "lapsed"), (r"lapse", "lapsed"), (r"ceased", "lapsed"),
     (r"expired\s*-\s*lifetime", "expired"), (r"^expired", "expired"),
     (r"abandon", "abandoned"), (r"withdrawn", "withdrawn"), (r"pending", "pending"),
-    (r"active", "active"), (r"in force", "active"),
+    (r"active", "active"), (r"in force", "active"), (r"^granted", "active"),
 ]
 
 
@@ -136,10 +136,13 @@ def parse(html: str, requested: str = "") -> dict:
               "title": _txt(row.select_one('[itemprop="title"]')), "text": attrs.get("Free format text", "")}
         legal.append(ev)
         blob = (ev["title"] + " " + ev["text"]).upper()
-        if ev["code"].upper() in ("MAFP", "FPAY", "M1551", "M1552", "M1553") or "MAINTENANCE FEE" in blob and "PAYMENT" in blob:
+        if ev["code"].upper() in ("MAFP", "FPAY", "FPAYP") or "PAYMENT OF MAINTENANCE FEE" in blob:
             year = attrs.get("Year of fee payment")
             year = int(year) if year and year.strip().isdigit() else None
-            fee_events.append({"date": ev["date"], "event": ev["text"] or ev["title"], "year": year})
+            if year is None:
+                ym = re.search(r"\b(4|8|12)(?:ST|ND|RD|TH)\s+YEAR", blob)
+                year = int(ym.group(1)) if ym else None
+            fee_events.append({"date": ev["date"], "event": ev["text"] or f"{ev['title']} (year {year})", "year": year})
         m = re.search(r"ENTITY STATUS OF PATENT OWNER:\s*(LARGE|SMALL|MICRO)", blob) or re.search(r"\b(LARGE|SMALL|MICRO) ENTITY\b", blob)
         if m:
             entity = m.group(1).lower()
@@ -164,23 +167,25 @@ def parse(html: str, requested: str = "") -> dict:
     if claims_sec:
         cnt = _first(claims_sec, '[itemprop="count"]')
         total_claims = int(cnt) if cnt.isdigit() else None
-        nodes = claims_sec.select('div[id^="CLM-"]')
-        if nodes:
-            indep = 0
-            for n in nodes:
-                parent_cls = n.parent.get("class", []) if n.parent else []
-                is_dep = "claim-dependent" in parent_cls or n.select_one("claim-ref") is not None
-                if not is_dep:
-                    indep += 1
-            total_claims = total_claims or len(nodes)
-            claim1 = _txt(nodes[0])
-        else:
-            items = claims_sec.select("claim, .claim")
-            if items:
-                total_claims = total_claims or len(items)
-                indep = sum(1 for c in items if c.select_one("claim-ref") is None)
-                claim1 = _txt(items[0])
-        claim1 = re.sub(r"^\s*1\s*\.\s*", "", claim1)
+        # Claim nodes: modern markup has id="CLM-nnnnn"; older markup only has num="n". Wrapper divs share class "claim", so
+        # keep the innermost element that carries an id or num attribute.
+        nodes = [n for n in claims_sec.select("div.claim, claim") if n.has_attr("num") or (n.get("id") or "").startswith("CLM-")]
+        dep_re = re.compile(r"\b(?:of|in|to|by|with|from|under)\s+(?:any\s+(?:one\s+)?of\s+)?claims?\s+\d+|as\s+(?:claimed|recited|defined|set forth)\s+in\s+claim|according\s+to\s+claim|claim\s+\d+\s*,?\s+wherein", re.I)
+        live = []
+        for n in nodes:
+            text = re.sub(r"^\s*\d+\s*(?:-\s*\d+)?\s*\.\s*", "", _txt(n))
+            if re.match(r"^\(?\s*(canceled|cancelled|withdrawn)\s*\)?\.?$", text.strip(), re.I) or re.match(r"^\(canceled\)|^\(cancelled\)", text, re.I):
+                continue
+            wrapper_cls = n.parent.get("class", []) if n.parent else []
+            is_dep = "claim-dependent" in wrapper_cls or n.select_one("claim-ref") is not None or bool(dep_re.search(text[:220]))
+            live.append((n, text, is_dep))
+        if live:
+            indep = sum(1 for _, _, d in live if not d)
+            first_indep = next((t for _, t, d in live if not d), live[0][1])
+            claim1 = first_indep
+            if total_claims and indep > total_claims:
+                indep = None  # inconsistent markup: report unknown rather than a wrong number
+            total_claims = total_claims or len(live)
         claim1_words = len(claim1.split()) if claim1 else None
 
     def _rows(prop):
@@ -238,8 +243,31 @@ def parse(html: str, requested: str = "") -> dict:
     }
 
 
-def lookup(num: str) -> dict:
+def granted_as(facts: dict) -> Optional[str]:
+    """For a published application that has issued, the number of the granted patent (from the events timeline)."""
+    if not re.match(r"^US20\d{9}A\d$", facts.get("publication_number") or ""):
+        return None
+    for e in facts.get("events") or []:
+        m = re.search(r"Publication of (US\d{6,8}B[12])", e.get("title") or "")
+        if m:
+            return m.group(1)
+    return None
+
+
+def lookup(num: str, follow_grant: bool = True) -> dict:
     html, url = fetch_html(num)
     facts = parse(html, num)
     facts["sources"] = [url]
+    if follow_grant:
+        g = granted_as(facts)
+        if g:
+            try:
+                granted = lookup(g, follow_grant=False)
+                granted["requested_as"] = facts["publication_number"]
+                granted["sources"] = granted["sources"] + [url]
+                return granted
+            except Exception:  # noqa: BLE001
+                pass
+    if re.match(r"^US20\d{9}A\d$", facts.get("publication_number") or "") and facts["legal_status"] == "active" and not facts.get("grant_date"):
+        facts["legal_status"] = "pending"  # application whose granted patent could not be read
     return facts

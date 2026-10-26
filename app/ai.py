@@ -440,6 +440,8 @@ def analyse_patent(num: str, today: date, on_step: Callable[[str], None] = lambd
         facts = google_patents.lookup(num)
         fact_urls = facts.get("sources") or []
         on_step(f"{num}: record read - '{(facts.get('title') or '')[:60]}', status {facts.get('status_detail') or facts.get('legal_status')}")
+        if facts.get("requested_as"):
+            on_step(f"{num}: this application was granted as {facts['publication_number']} - analysing the granted patent")
     except Exception as ex:  # noqa: BLE001
         if not use_ai:
             raise ValueError(f"Google Patents record not available ({ex})")

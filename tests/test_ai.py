@@ -216,3 +216,66 @@ def test_lookup_endpoint(monkeypatch):
         r = c.get("/v1/patent-lookup/US10055028B2", headers=H).json()
         assert r["current_assignee"] == "Google LLC"
         assert c.get("/v1/patent-lookup/US1111111B2", headers=H).status_code == 404
+
+
+# ---- formats observed on real Google Patents pages (structure copied from live markup, text trimmed)
+
+OLD_FORMAT = """<html><head><meta name="DC.date" content="1992-06-23" scheme="issue"></head><body>
+<dd itemprop="publicationNumber">US5123456A</dd><span itemprop="title">Banding tool</span><meta itemprop="kindCode" content="A">
+<dd itemprop="legalStatusIfi" itemscope=""><span itemprop="status">Expired - Lifetime</span></dd>
+<section itemprop="claims" itemscope=""><h2>Claims (<span itemprop="count">3</span>)</h2><div itemprop="content" html=""><div class="claims"><claim-statement>I claim:</claim-statement>
+<div class="claim"><div num="1" class="claim"><div class="claim-text">1. A banding tool for use with a band and a buckle, comprising:<div class="claim-text">means for tensioning the band;</div></div></div></div>
+<div class="claim-dependent"><div num="2" class="claim"><div class="claim-text">2. A banding tool, as claimed in claim 1, wherein the nose is curved.</div></div></div>
+<div class="claim"><div num="3" class="claim"><div class="claim-text">3. A method of banding comprising tensioning and cutting a band.</div></div></div>
+</div></div></section>
+<table><tr itemprop="legalEvents" itemscope="" repeat=""><td><time itemprop="date" datetime="1995-12-12">1995-12-12</time></td><td itemprop="code">FPAY</td><td itemprop="title">Fee payment</td><td><p itemprop="attributes" itemscope="" repeat=""><strong itemprop="label">Year of fee payment</strong>: <span itemprop="value">4</span></p></td></tr>
+<tr itemprop="legalEvents" itemscope="" repeat=""><td><time itemprop="date" datetime="1999-12-13">1999-12-13</time></td><td itemprop="code">FPAY</td><td itemprop="title">Fee payment</td><td><p itemprop="attributes" itemscope="" repeat=""><strong itemprop="label">Year of fee payment</strong>: <span itemprop="value">8</span></p></td></tr>
+<tr itemprop="legalEvents" itemscope="" repeat=""><td><time itemprop="date" datetime="2003-11-26">2003-11-26</time></td><td itemprop="code">FPAY</td><td itemprop="title">Fee payment</td><td><p itemprop="attributes" itemscope="" repeat=""><strong itemprop="label">Year of fee payment</strong>: <span itemprop="value">12</span></p></td></tr>
+<tr itemprop="legalEvents" itemscope="" repeat=""><td><time itemprop="date" datetime="2018-03-15">2018-03-15</time></td><td itemprop="code">FEPP</td><td itemprop="title">Fee payment procedure</td><td><p itemprop="attributes" itemscope="" repeat=""><strong itemprop="label">Free format text</strong>: <span itemprop="value">PETITION RELATED TO MAINTENANCE FEES GRANTED (ORIGINAL EVENT CODE: PTGR); ENTITY STATUS OF PATENT OWNER: LARGE ENTITY</span></p></td></tr></table>
+</body></html>"""
+
+APPLICATION_GRANTED = """<html><body><dd itemprop="publicationNumber">US20210123456A1</dd><span itemprop="title">Centrifugal compressor</span>
+<meta itemprop="kindCode" content="A1"><dd itemprop="legalStatusIfi" itemscope=""><span itemprop="status">Granted</span></dd>
+<section itemprop="claims" itemscope=""><h2>Claims (<span itemprop="count">6</span>)</h2><div itemprop="content" html=""><div class="claims">
+<div class="claim"><div id="CLM-001-6" num="001-6" class="claim"><div class="claim-text"><b>1</b>-<b>6</b>. (canceled)</div></div></div>
+<div class="claim"><div id="CLM-00007" num="00007" class="claim"><div class="claim-text"><b>7</b>. A centrifugal compressor comprising an impeller and a housing having a scroll part and a diffuser part.</div></div></div>
+<div class="claim-dependent"><div id="CLM-00008" num="00008" class="claim"><div class="claim-text"><b>8</b>. The centrifugal compressor according to <claim-ref idref="CLM-00007">claim 7</claim-ref>, wherein the walls are parallel.</div></div></div>
+</div></div></section>
+<dd itemprop="events" itemscope="" repeat=""><time itemprop="date" datetime="2021-07-27">2021-07-27</time><span itemprop="title">Application granted</span><span itemprop="type">granted</span></dd>
+<dd itemprop="events" itemscope="" repeat=""><time itemprop="date" datetime="2021-07-27">2021-07-27</time><span itemprop="title">Publication of US11073164B2</span><span itemprop="type">publication</span></dd>
+</body></html>"""
+
+
+def test_old_format_claims_and_fpay_events():
+    from app.google_patents import parse
+    f = parse(OLD_FORMAT, "US5123456A")
+    assert f["total_claims"] == 3 and f["independent_claims"] == 2  # wrapper divs not double-counted; "as claimed in claim 1" is dependent
+    assert f["claim1_summary"].startswith("A banding tool")
+    assert [e["year"] for e in f["maintenance_fee_events"]] == [4, 8, 12]  # FEPP petition is NOT a payment
+    assert f["legal_status"] == "expired" and f["grant_date"] == "1992-06-23"
+
+
+def test_canceled_claims_and_granted_application_followed(monkeypatch):
+    from app import google_patents
+    f = google_patents.parse(APPLICATION_GRANTED, "US20210123456A1")
+    assert f["independent_claims"] == 1 and f["claim1_summary"].startswith("A centrifugal compressor")
+    assert google_patents.granted_as(f) == "US11073164B2"
+
+    def fake(num, timeout=20.0, retries=2):
+        if num.startswith("US20210123456"):
+            return APPLICATION_GRANTED, "https://patents.google.com/patent/US20210123456A1/en"
+        if num.startswith("US11073164"):
+            return open(FIXTURE, encoding="utf-8").read().replace("US10055028B2", "US11073164B2"), "https://patents.google.com/patent/US11073164B2/en"
+        raise google_patents.NotFound("404")
+    monkeypatch.setattr(google_patents, "fetch_html", fake)
+    g = google_patents.lookup("US20210123456A1")
+    assert g["publication_number"] == "US11073164B2" and g["requested_as"] == "US20210123456A1" and g["grant_date"]
+
+
+def test_fee_stages_for_old_patent_all_paid():
+    from datetime import date
+    from app.costs import fee_stage_status
+    st = fee_stage_status({"status": "expired", "grant_date": date(1992, 6, 23), "expiry_estimate": date(2010, 10, 5), "entity_size": "large",
+                           "kind_code": "A", "jurisdiction": "US",
+                           "signals": {"maintenance_fee_events": [{"event": "Fee payment", "year": y} for y in (4, 8, 12)]}}, date(2026, 10, 27))
+    assert [s["state"] for s in st] == ["paid_record"] * 3
