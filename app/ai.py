@@ -197,9 +197,11 @@ Return this JSON schema (use null where unknown):
  "sources": [url]
 }}"""
 
-RATING_SCHEMA = """Return this JSON schema:
-{{"rating": 0-5 integer (null only if there is genuinely no evidence at all), "rationale": "<= 60 words explaining the rating",
- "confidence": 0.0-1.0 (how strongly the evidence supports the rating), "evidence": [{{"url": str, "title": str, "date": "YYYY-MM-DD"|null, "finding": "<= 30 words"}}] (max 4)}}"""
+RATING_SCHEMA = """Return exactly this JSON schema:
+{{"rating": 0-5 integer (use a provisional best-estimate score rather than null when any defensible estimate is possible; null only when even a provisional estimate is impossible),
+ "rationale": "120-220 words. Give a technical, evidence-led explanation: identify the patent's relevant technical mechanism/claim features; state the observed evidence; connect each major signal to the rubric; explain why this score was chosen over the adjacent score; distinguish verified facts from inference; describe counter-evidence, uncertainty and missing evidence; end with the most useful next verification step.",
+ "confidence": 0.0-1.0 (evidence confidence, not confidence in eloquence; low when relying on indirect signals or fallback inference),
+ "evidence": [{{"url": str, "title": str, "date": "YYYY-MM-DD"|null, "finding": "40-80 words describing the specific relevant finding and its technical/business significance"}}] (up to 6; include only real consulted sources, prioritise primary sources; never fabricate URLs or source findings)}}"""
 
 FACT_BLOCK = """Patent facts (verified in step 1, today is {today}):
 {facts}
@@ -207,60 +209,86 @@ FACT_BLOCK = """Patent facts (verified in step 1, today is {today}):
 
 DIM_PROMPTS = {
     "commercial": {
-        "tools": [{**WEB_SEARCH, "max_uses": 4}],
-        "prompt": """PARAMETER: Commercial and product relevance — is the claimed invention used in products the owner sells today?
+        "tools": [{**WEB_SEARCH, "max_uses": 6}],
+        "prompt": """PARAMETER: Commercial and product relevance — assess whether products or services sold by the current owner plausibly practise the patent's actual claims.
 
-Research: search for current products of {owner} that implement: "{claim}". Check the owner's virtual patent marking page (search "{owner} virtual patent marking" and look for {num}), product pages, datasheets and press releases. Note whether matching products are current or discontinued.
+RESEARCH PLAN: Search the owner's official product catalogue, datasheets, manuals, product launch/retirement announcements, virtual patent marking, annual reports and technical pages. Search the patent number and distinctive claim phrases with product names. Compare technical features in the product evidence with claim 1 and the key dependent claims. Search for current AND discontinued products. Cite direct evidence separately from inference; do not treat a general technology match as proof of infringement.
 
-Rubric: 5 = patent listed on a virtual-marking page for a current product, or a current flagship product clearly practises the claims · 4 = current product very likely practises it · 3 = related current product line, link plausible · 2 = only older/sunset products or a weak link · 1 = searched and found no product use · 0 = owner has exited this business.""",
+ANALYSIS REQUIRED: Identify the claimed mechanism, product feature it could map to, matching and missing claim elements, product lifecycle, likely commercial significance, and what evidence would confirm the mapping. Never state infringement as a fact without a proper claim chart.
+
+RUBRIC: 5 = explicit marking or strong element-by-element match to a current major product; 4 = multiple technical matches to a current product, remaining gaps stated; 3 = plausible product-line match but incomplete mapping; 2 = indirect, niche or legacy product link; 1 = researched with no credible product match (absence of public evidence is not proof of no use); 0 = credible evidence owner exited the relevant business and no remaining product relevance.
+
+If product evidence is sparse, give a provisional best estimate with low confidence instead of null. Explain the evidence gap.""",
     },
     "claim_quality": {
-        "tools": [],
-        "prompt": """PARAMETER: Claim quality and practical protection — how broad and robust are the granted claims?
+        "tools": [{**WEB_SEARCH, "max_uses": 3}],
+        "prompt": """PARAMETER: Claim quality and practical protection — a technical scope assessment, not a legal opinion.
 
-Use only the facts above (no research needed): number of independent claims, total claims, claim-1 word count (shorter usually means broader), the claim-1 summary (how many limitations, how easy to design around), kind code (B1 = granted without pre-grant publication) and any IPR/litigation outcome mentioned.
+RESEARCH PLAN: Use the supplied patent record, then where possible search the official prosecution file/USPTO Patent Center for amendments, examiner rejections, allowed claims, RCEs, disclaimers, re-examination, IPR/PTAB or court outcomes. Compare granted claim 1 with the abstract and specification. Do not assume a short claim is broad without analysing its limitations.
 
-Rubric: 5 = several independent claims, short broad claim 1, hard to design around · 4 = good breadth with layered claims · 3 = average scope · 2 = narrow, many limitations, easy to design around · 1 = very narrow single independent claim · 0 = claims invalidated or disclaimed. For a pending application rate the published claims but cap at 3. Do not give a legal validity opinion.""",
+ANALYSIS REQUIRED: Explain the core technical combination protected; list the main mandatory limitations in claim 1; discuss breadth versus specificity, practical design-around routes, dependent-claim fallback positions, prosecution narrowing and known validity challenges. Identify missing prosecution evidence. Distinguish technical scope from enforceability.
+
+RUBRIC: 5 = valuable technical combination with meaningful breadth, layered claims and no identified major adverse outcome; 4 = useful scope with some limiting elements and fallback claims; 3 = moderate scope or mixed signals; 2 = several limiting elements or credible design-arounds; 1 = very narrow or heavily constrained claims; 0 = authoritative record shows claims invalidated/disclaimed in a way that removes relevant protection. Pending applications are capped at 3 and clearly labelled provisional.
+
+If detailed prosecution history is unavailable, still provide a cautious provisional score based on granted claims and lower confidence.""",
     },
     "competitive": {
-        "tools": [{**WEB_SEARCH, "max_uses": 3}],
-        "prompt": """PARAMETER: Competitive and market relevance — do competitors care about this patent?
+        "tools": [{**WEB_SEARCH, "max_uses": 6}],
+        "prompt": """PARAMETER: Competitive and market relevance — estimate whether the patent appears technically relevant to competitors or an important technology area.
 
-Research: compare the forward-citation count with what is typical for a US patent of the same age and field (roughly 1 citation per year since grant is average; well-cited patents have 3x+). Weigh citations by major competitors more heavily ({citers}). Search whether the patent is declared standard-essential or linked to a standard (search "{num} standard essential" and "{num} ETSI").
+RESEARCH PLAN: Verify forward citations and cited-by records from Google Patents/USPTO. Identify which cited-by documents are from competitors, and inspect representative citing documents for why they cite the patent. Compare citations with patents of similar age and CPC/technology area rather than relying only on a universal average. Search the patent number and key technical phrases with standards, standards-essential declarations, product launches, competing patents and market developments.
 
-Rubric: 5 = heavily cited incl. by major competitors, or declared SEP · 4 = well above average citations with competitor citations · 3 = around average with some competitor citations · 2 = below average · 1 = rarely cited · 0 = no citations and the technology is obsolete. Citations alone are a weak proxy — say so if they are the only signal.""",
+ANALYSIS REQUIRED: Explain the technology's role, meaningful competitor signals, citation quality and age-normalised context, possible standards relevance, alternative explanations for citations, and evidence limitations. A citation is not proof of use, infringement, commercial importance or essentiality.
+
+RUBRIC: 5 = multiple strong independent signals such as major competitor citations plus standards or product evidence; 4 = clearly above-cohort influence and credible competitor relevance; 3 = moderate influence or one meaningful signal; 2 = weak or below-cohort signals; 1 = little demonstrated external relevance after a reasonable search; 0 = no external signal AND credible evidence the technology is obsolete. Do not award 0 merely because citations are absent.
+
+If search results are limited, return a provisional score and lower confidence rather than null.""",
     },
     "strategic": {
-        "tools": [{**WEB_SEARCH, "max_uses": 3}],
-        "prompt": """PARAMETER: Strategic and defensive value to the current owner ({owner}).
+        "tools": [{**WEB_SEARCH, "max_uses": 6}],
+        "prompt": """PARAMETER: Strategic and defensive value to the current owner.
 
-Research: is this technology ({cpc} — "{claim}") in the owner's current core business segments (annual report, 10-K, investor or company pages)? Is the owner still investing in it (recent filings, continuations: has_continuations={cont})? Could it block competitors' products (defensive/FTO value)?
+RESEARCH PLAN: Search the owner's official business segments, current products, annual reports/10-Ks, investor presentations, R&D announcements, acquisitions/divestitures, technical roadmap signals and related patent filings. Map the patent's actual technical subject matter—not just its title or CPC label—to the owner's current businesses. Search for continuation activity and relevant competitor product categories.
 
-Rubric: 5 = core segment, continuing investment, clear blocking value · 4 = important adjacent area · 3 = relevant but not core · 2 = peripheral · 1 = non-core / area de-emphasised · 0 = owner divested this business.""",
+ANALYSIS REQUIRED: State which business segment could use the invention, how the claims could support differentiation or defensive freedom-to-operate, whether there is evidence of continued investment, and whether the technology appears core, adjacent or peripheral. Separate public evidence from assumptions about internal strategy. Explain why this patent matters strategically even if no product mapping is publicly available.
+
+RUBRIC: 5 = direct fit with a core business plus credible investment and blocking/differentiation value; 4 = strong adjacent business fit or substantial defensive value; 3 = plausible strategic fit but incomplete evidence; 2 = peripheral or declining relevance; 1 = weak fit after researching the owner's portfolio/business; 0 = credible evidence the owner exited the relevant business and no strategic dependency remains.
+
+Do not return null only because customer strategy inputs are absent. Give a provisional public-evidence assessment with low confidence when necessary.""",
     },
     "portfolio": {
-        "tools": [{**WEB_SEARCH, "max_uses": 3}],
-        "prompt": """PARAMETER: Portfolio contribution — how unique is this patent within {owner}'s portfolio?
+        "tools": [{**WEB_SEARCH, "max_uses": 6}],
+        "prompt": """PARAMETER: Portfolio contribution — how much incremental protection this patent adds to the current owner's portfolio.
 
-Research: search for other patents assigned to {owner} with similar titles or the same CPC subgroup ({cpc}) — e.g. a Google Patents search. Note US family members/continuations from the facts ({family}). A patent whose subject matter is also covered by several other live patents or continuations of the same owner contributes less on its own.
+RESEARCH PLAN: Search the owner's patent portfolio by exact assignee, title/claim phrases and CPC subgroup. Inspect related live US patents, family members, continuations, divisionals and relevant foreign family members. Verify status where possible; distinguish shared CPC classification from actual technical overlap.
 
-Rubric: 5 = foundational and unique, no overlapping owner patents · 4 = few overlaps, key family member · 3 = some overlapping coverage · 2 = largely overlapping with other live patents · 1 = redundant · 0 = fully duplicated by another live patent.""",
+ANALYSIS REQUIRED: Compare the invention's key technical features with the closest same-owner assets. Identify complementary coverage versus duplication, family role, geographic coverage and whether this patent protects a distinct implementation or fallback position. Name representative overlapping documents and explain the overlap; do not infer redundancy from CPC alone.
+
+RUBRIC: 5 = distinct foundational coverage with no material same-owner overlap found; 4 = mostly differentiated or a strategically important family member; 3 = some overlap but meaningful incremental scope; 2 = substantial overlap with other live assets; 1 = appears largely redundant; 0 = verified full duplication by another live same-owner patent. A search that finds no overlap is not proof none exists.
+
+When portfolio search is incomplete, provide a provisional estimate and explicitly state the search limitation rather than returning null.""",
     },
     "licensing": {
-        "tools": [{**WEB_SEARCH, "max_uses": 3}],
-        "prompt": """PARAMETER: Licensing and monetisation potential.
+        "tools": [{**WEB_SEARCH, "max_uses": 6}],
+        "prompt": """PARAMETER: Licensing and monetisation potential — assess plausible licensing opportunities without asserting infringement as fact.
 
-Research: search for litigation or PTAB IPR involving {num} (e.g. "{num} lawsuit", "{num} inter partes review"), licensing programmes or patent pools that include it, assignments to licensing companies, and evidence that third-party products (especially {citers}) may use the claimed feature.
+RESEARCH PLAN: Search for licensing programmes, patent pools, standards, litigation and PTAB records, assignments to licensing entities, public licensing announcements and products from likely third parties that may implement the claimed technical features. Search exact patent number, distinctive claim language and likely licensee product categories. Prioritise official records, company technical documentation and court/standards sources.
 
-Rubric: 5 = currently licensed or successfully asserted · 4 = strong evidence of third-party use / active programme · 3 = plausible licensing targets identified · 2 = weak or speculative potential · 1 = no evidence of potential · 0 = claims held invalid or licence-encumbered so no value. Note uncertainty explicitly.""",
+ANALYSIS REQUIRED: Describe the specific claim features that could be licensable, potential licensee categories or named candidates where evidence supports them, product-to-claim mapping signals, market adoption, enforceability/validity risks, ownership and encumbrance questions, and what additional investigation would be needed. Clearly separate confirmed licences, evidence-of-use leads and speculative targets. Competitor citations alone are not evidence of infringement.
+
+RUBRIC: 5 = confirmed licence or successful assertion with current monetisation evidence; 4 = strong claim-to-product evidence or active licensing route; 3 = credible potential licensee categories with technical matches but gaps remain; 2 = speculative opportunity with weak mapping; 1 = no credible targets identified after a reasonable search; 0 = authoritative evidence claims were invalidated or a binding encumbrance removes practical licensing value. Lack of public licensing news alone must not force a 0 or null.
+
+Always return a provisional rating when a reasoned estimate is possible, with confidence reflecting the evidence quality.""",
     },
     "future": {
-        "tools": [{**WEB_SEARCH, "max_uses": 2}],
-        "prompt": """PARAMETER: Future option value — how much useful life and market upside remains?
+        "tools": [{**WEB_SEARCH, "max_uses": 5}],
+        "prompt": """PARAMETER: Future option value — assess the patent's remaining legal life and the plausible future importance of its specific technology.
 
-Use the anticipated expiration ({exp}) versus today ({today}) and research the market outlook for this technology ({cpc} — "{claim}"): growing, stable or declining?
+RESEARCH PLAN: Use the supplied anticipated expiration and current date. Verify legal status and fee events where possible. Research technology adoption, product roadmaps, standards, R&D activity, patent-filing trends and credible market forecasts for the relevant technical field. Distinguish a broad fashionable topic from the specific invention claimed.
 
-Rubric: 5 = 10+ years of term left in a fast-growing market · 4 = 7+ years in a growing market · 3 = moderate term or stable market · 2 = under 5 years left or slowing market · 1 = under 2 years left or declining market · 0 = expired or lapsed.""",
+ANALYSIS REQUIRED: Explain (1) remaining enforceable term and key status caveats, (2) whether the technical approach is emerging, scaling, mature or declining, (3) concrete future applications supported by evidence, (4) possible obsolescence/substitution risks, and (5) why the remaining term is or is not long enough to capture value. Do not equate “AI”, “VR” or another futuristic label with a growing market without evidence.
+
+RUBRIC: 5 = 10+ years remaining and strong evidence of a growing/relevant market; 4 = 7+ years and credible growth/use signals; 3 = moderate term or stable market with plausible applications; 2 = under 5 years or weakening relevance; 1 = under 2 years or strong decline/substitution signals; 0 = verified expired/lapsed status with no realistic remaining rights. If term or market data is incomplete, give a provisional score and lower confidence; do not return null solely for missing trend statistics.""",
     },
 }
 
