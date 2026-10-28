@@ -335,3 +335,15 @@ def test_foreign_script_aliases_not_counted_as_extra_companies():
              {"pub": "US2B2", "assignee": "Google LLC", "published": "2024-01-01", "title": "x"}]
     s = signals({"current_assignee": "Google LLC", "citing_documents": docs, "forward_citations": 6}, date(2026, 10, 27))
     assert s["n_third"] == 1 and list(s["third"]) == ["Apple"] and s["foreign_script"] == 2 and s["self_cites"] == 1
+
+
+def test_paid_fee_not_forecast_again_within_grace_window():
+    # US8901234B2 pattern: 12th-year fee paid on record, but its due date + grace window is still open.
+    from datetime import date
+    from app.costs import forecast
+    a = {"status": "active", "jurisdiction": "US", "kind_code": "B2", "entity_size": "large",
+         "grant_date": date(2014, 12, 2), "expiry_estimate": date(2029, 6, 16),
+         "signals": {"maintenance_fee_events": [{"event": "Fee payment", "year": y} for y in (4, 8, 12)]}}
+    f = forecast(a, date(2026, 10, 28), [3, 5])
+    assert f["items"] == [] and f["next_deadline"] is None
+    assert f["remaining_to_expiry"] in ("0.00", None) or float(f["remaining_to_expiry"]) == 0

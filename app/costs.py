@@ -211,8 +211,10 @@ def forecast(asset: dict, as_of: date, horizons: list[int], assumptions: dict | 
                               "basis": "estimate", "label": f"{ev['stage']}-year maintenance fee (after estimated grant)"})
         notes.append("Pending application: grant timing and prosecution costs are assumptions.")
     elif status in ("active", "granted") and grant:
+        # A fee the record shows as paid is not owed again, even if its due date or grace period is still open.
+        paid_stages = {st["stage"] for st in fee_stage_status(asset, as_of, a) if st.get("state") in ("paid_record", "paid")}
         for ev in maintenance_events(grant, expiry, entity, as_of):
-            if ev["state"] == "past":
+            if ev["state"] == "past" or ev["stage"] in paid_stages:
                 continue
             pay_date = as_of if ev["state"] == "in_grace" else date.fromisoformat(ev["due_date"])
             items.append({**ev, "date": pay_date.isoformat(), "professional_fee": str(money(a["annuity_service_fee_per_payment"])),
